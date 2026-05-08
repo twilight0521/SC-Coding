@@ -1,0 +1,31 @@
+{
+  "name": "supercompany-coding",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "tsx scripts/migrate.ts"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "latest",
+    "@monaco-editor/react": "latest",
+    "@xterm/xterm": "latest",
+    "zustand": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "typescript": "latest"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "latest",
+    "vite": "latest",
+    "vitest": "latest",
+    "eslint": "latest",
+    "prettier": "latest"
+  }
+}
