@@ -1,0 +1,18 @@
+{
+  "name": "supercompany-coding",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @supercompany/desktop dev",
+    "build": "pnpm --filter @supercompany/desktop build",
+    "typecheck": "pnpm --filter @supercompany/shared typecheck && pnpm --filter @supercompany/core typecheck && pnpm --filter @supercompany/desktop typecheck",
+    "lint": "pnpm --filter @supercompany/desktop lint"
+  },
+  "workspace": [
+    "apps/desktop",
+    "packages/shared",
+    "packages/core",
+    "docs"
+  ]
+}

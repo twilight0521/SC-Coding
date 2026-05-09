@@ -1,0 +1,48 @@
+{
+  "name": "@supercompany/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "@supercompany/shared": "workspace:*",
+    "@supercompany/core": "workspace:*",
+    "zustand": "^5.0.3",
+    "react-router-dom": "^7.6.0",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.3.0",
+    "class-variance-authority": "^0.7.1",
+    "lucide-react": "^0.511.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.4",
+    "@tauri-apps/cli": "^2",
+    "tailwindcss": "^4.1.4",
+    "postcss": "^8.5.3",
+    "autoprefixer": "^10.4.21",
+    "@tailwindcss/vite": "^4.1.4",
+    "eslint": "^9.24.0",
+    "@eslint/js": "^9.24.0",
+    "typescript-eslint": "^8.29.1",
+    "prettier": "^3.5.3",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.20"
+  }
+}
