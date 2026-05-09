@@ -335,4 +335,67 @@ CREATE INDEX IF NOT EXISTS idx_routing_history_task ON routing_history(task_id, 
 CREATE INDEX IF NOT EXISTS idx_model_call_logs_project_created ON model_call_logs(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_run_events_project_run_created ON run_events(project_run_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_decision_logs_project_run_created ON decision_logs(project_run_id, created_at);
+
+-- Test runs
+CREATE TABLE IF NOT EXISTS test_runs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    command TEXT,
+    working_directory TEXT,
+    start_time TEXT NOT NULL,
+    end_time TEXT,
+    status TEXT,
+    total_tests INTEGER DEFAULT 0,
+    passed_tests INTEGER DEFAULT 0,
+    failed_tests INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_test_runs_project ON test_runs(project_id, start_time);
+
+-- Debug sessions
+CREATE TABLE IF NOT EXISTS debug_sessions (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    error_description TEXT,
+    status TEXT NOT NULL,
+    current_round INTEGER DEFAULT 0,
+    max_rounds INTEGER DEFAULT 3,
+    fix_history_json TEXT,
+    resolution TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(task_id) REFERENCES tasks(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_debug_sessions_task ON debug_sessions(task_id, status);
+
+-- Scenario plans
+CREATE TABLE IF NOT EXISTS scenario_plans (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    complexity TEXT DEFAULT 'medium',
+    estimated_tasks INTEGER DEFAULT 5,
+    estimated_duration_minutes INTEGER DEFAULT 30,
+    agent_team_json TEXT,
+    routing_policy_json TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+-- Task breakdowns
+CREATE TABLE IF NOT EXISTS task_breakdowns (
+    id TEXT PRIMARY KEY,
+    scenario_plan_id TEXT NOT NULL,
+    original_task_title TEXT NOT NULL,
+    subtasks_json TEXT,
+    execution_order_json TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(scenario_plan_id) REFERENCES scenario_plans(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_breakdowns_plan ON task_breakdowns(scenario_plan_id);
 "#;

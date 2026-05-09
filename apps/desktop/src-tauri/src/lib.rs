@@ -106,6 +106,33 @@ pub fn run() {
             commands::create_project_run,
             commands::get_project_runs,
             commands::update_project_run_status,
+            // Task runner commands
+            commands::execute_task,
+            commands::run_task_sequence,
+            commands::add_task_dependency,
+            commands::get_task_execution_history,
+            commands::save_decision_log,
+            commands::get_decision_logs,
+            // Tester commands
+            commands::run_tests,
+            commands::get_test_history,
+            commands::get_test_framework_info,
+            commands::quick_test,
+            // Debugger commands
+            commands::start_debug_session,
+            commands::record_fix_attempt,
+            commands::get_debug_session,
+            commands::get_active_debug_sessions,
+            commands::analyze_error,
+            commands::get_debug_history,
+            commands::close_debug_session,
+            // Orchestrator commands
+            commands::create_scenario_plan,
+            commands::get_scenario_plans,
+            commands::breakdown_task,
+            commands::create_orchestrator_report,
+            commands::get_orchestrator_reports,
+            commands::get_task_breakdown,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

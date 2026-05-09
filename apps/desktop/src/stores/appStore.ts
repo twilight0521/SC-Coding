@@ -84,6 +84,39 @@ export interface RoutingDecision {
   fallback_provider_id?: string;
 }
 
+export interface TaskResult {
+  task_id: string;
+  status: string;
+  output?: string;
+  error?: string;
+  patches: FilePatch[];
+  cost: number;
+  duration_ms: number;
+}
+
+export interface FilePatch {
+  file_path: string;
+  patch: string;
+  old_hash?: string;
+  new_hash?: string;
+}
+
+export interface DecisionLog {
+  id: string;
+  project_run_id: string;
+  task_id?: string;
+  decision_type: string;
+  decision_summary: string;
+  reason: string;
+  decided_by: string;
+  alternatives_json?: string;
+  risk_level?: string;
+  selected_model_provider_id?: string;
+  selected_model_profile_id?: string;
+  estimated_cost?: number;
+  created_at: string;
+}
+
 export interface ProviderPreset {
   id: string;
   name: string;
@@ -147,6 +180,8 @@ interface AppState {
   error: string | null;
   selectedFilePath: string | null;
   fileTree: FileNode[];
+  taskResults: TaskResult[];
+  decisionLogs: DecisionLog[];
 
   // Provider actions
   fetchProviders: () => Promise<void>;
@@ -194,6 +229,25 @@ interface AppState {
   // Routing actions
   fetchAvailableModels: () => Promise<void>;
   routeTask: (taskType: string, complexity: string) => Promise<RoutingDecision[]>;
+
+  // Task Runner actions
+  executeTask: (taskId: string) => Promise<TaskResult>;
+  runTaskSequence: (projectId: string, taskIds: string[]) => Promise<TaskResult[]>;
+  addTaskDependency: (taskId: string, dependsOnTaskId: string) => Promise<void>;
+  getTaskExecutionHistory: (taskId: string) => Promise<unknown[]>;
+  saveDecisionLog: (
+    projectRunId: string,
+    decisionType: string,
+    decisionSummary: string,
+    reason: string,
+    decidedBy: string,
+    taskId?: string,
+    riskLevel?: string,
+    selectedProviderId?: string,
+    selectedModelProfileId?: string,
+    estimatedCost?: number
+  ) => Promise<string>;
+  getDecisionLogs: (projectRunId: string) => Promise<DecisionLog[]>;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -210,6 +264,8 @@ export const useAppStore = create<AppState>((set) => ({
   error: null,
   selectedFilePath: null,
   fileTree: [],
+  taskResults: [],
+  decisionLogs: [],
 
   // Provider
   fetchProviders: async () => {
@@ -522,6 +578,92 @@ export const useAppStore = create<AppState>((set) => ({
           preferred_speed: 'balanced',
         },
       });
+    } catch (e) {
+      set({ error: String(e) });
+      return [];
+    }
+  },
+
+  // Task Runner
+  executeTask: async (taskId) => {
+    set({ loading: true, error: null });
+    try {
+      const result = await invoke<TaskResult>('execute_task', { taskId });
+      set((state) => ({ taskResults: [...state.taskResults, result], loading: false }));
+      return result;
+    } catch (e) {
+      set({ error: String(e), loading: false });
+      throw e;
+    }
+  },
+
+  runTaskSequence: async (projectId, taskIds) => {
+    set({ loading: true, error: null });
+    try {
+      const results = await invoke<TaskResult[]>('run_task_sequence', { projectId, taskIds });
+      set((state) => ({ taskResults: [...state.taskResults, ...results], loading: false }));
+      return results;
+    } catch (e) {
+      set({ error: String(e), loading: false });
+      throw e;
+    }
+  },
+
+  addTaskDependency: async (taskId, dependsOnTaskId) => {
+    try {
+      await invoke('add_task_dependency', { taskId, dependsOnTaskId });
+    } catch (e) {
+      set({ error: String(e) });
+      throw e;
+    }
+  },
+
+  getTaskExecutionHistory: async (taskId) => {
+    try {
+      return await invoke<unknown[]>('get_task_execution_history', { taskId });
+    } catch (e) {
+      set({ error: String(e) });
+      return [];
+    }
+  },
+
+  saveDecisionLog: async (
+    projectRunId,
+    decisionType,
+    decisionSummary,
+    reason,
+    decidedBy,
+    taskId,
+    riskLevel,
+    selectedProviderId,
+    selectedModelProfileId,
+    estimatedCost
+  ) => {
+    try {
+      const id = await invoke<string>('save_decision_log', {
+        projectRunId,
+        decisionType,
+        decisionSummary,
+        reason,
+        decidedBy,
+        taskId,
+        riskLevel,
+        selectedProviderId,
+        selectedModelProfileId,
+        estimatedCost,
+      });
+      return id;
+    } catch (e) {
+      set({ error: String(e) });
+      throw e;
+    }
+  },
+
+  getDecisionLogs: async (projectRunId) => {
+    try {
+      const logs = await invoke<DecisionLog[]>('get_decision_logs', { projectRunId });
+      set({ decisionLogs: logs });
+      return logs;
     } catch (e) {
       set({ error: String(e) });
       return [];
