@@ -1,8 +1,8 @@
-use serde::{Deserialize, Serialize};
 use crate::db::Database;
-use tauri::State;
-use rusqlite::params;
 use chrono::Utc;
+use rusqlite::params;
+use serde::{Deserialize, Serialize};
+use tauri::State;
 use uuid::Uuid;
 
 // ==================== TASK TYPES ====================
@@ -68,6 +68,25 @@ impl TaskType {
             _ => None,
         }
     }
+
+    /// All variants, in canonical order. Used as single source of truth.
+    pub const ALL: &'static [TaskType] = &[
+        TaskType::RequirementAnalysis,
+        TaskType::ArchitectureDesign,
+        TaskType::RepoUnderstanding,
+        TaskType::FrontendCoding,
+        TaskType::BackendCoding,
+        TaskType::DatabaseDesign,
+        TaskType::TestGeneration,
+        TaskType::Debugging,
+        TaskType::CodeReview,
+        TaskType::SecurityReview,
+        TaskType::Documentation,
+        TaskType::Refactoring,
+        TaskType::MultimodalParsing,
+        TaskType::Research,
+        TaskType::Integration,
+    ];
 }
 
 // ==================== ROUTING INPUT/OUTPUT ====================
@@ -75,10 +94,10 @@ impl TaskType {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RoutingInput {
     pub task_type: String,
-    pub task_complexity: String,  // "low", "medium", "high"
+    pub task_complexity: String, // "low", "medium", "high"
     pub required_capabilities: Vec<String>,
     pub max_cost: Option<f64>,
-    pub preferred_speed: String,   // "fast", "balanced", "quality"
+    pub preferred_speed: String, // "fast", "balanced", "quality"
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -99,16 +118,30 @@ fn get_task_weights(task_type: &str) -> Vec<(&'static str, f64)> {
     match task_type {
         "requirement_analysis" => vec![("reasoning", 5.0), ("coding", 1.0), ("chinese", 3.0)],
         "architecture_design" => vec![("reasoning", 5.0), ("coding", 2.0), ("long_context", 3.0)],
+        "repo_understanding" => vec![("reasoning", 4.0), ("long_context", 5.0), ("coding", 2.0)],
         "frontend_coding" => vec![("coding", 5.0), ("tool_use", 3.0), ("speed", 3.0)],
         "backend_coding" => vec![("coding", 5.0), ("reasoning", 3.0), ("speed", 2.0)],
         "database_design" => vec![("coding", 4.0), ("reasoning", 3.0), ("long_context", 2.0)],
-        "test_generation" => vec![("coding", 4.0), ("tool_use", 4.0), ("json_reliability", 3.0)],
-        "debugging" => vec![("reasoning", 5.0), ("coding", 4.0), ("json_reliability", 2.0)],
+        "test_generation" => vec![
+            ("coding", 4.0),
+            ("tool_use", 4.0),
+            ("json_reliability", 3.0),
+        ],
+        "debugging" => vec![
+            ("reasoning", 5.0),
+            ("coding", 4.0),
+            ("json_reliability", 2.0),
+        ],
         "code_review" => vec![("code_review", 5.0), ("reasoning", 3.0), ("coding", 2.0)],
         "security_review" => vec![("code_review", 4.0), ("reasoning", 4.0), ("coding", 2.0)],
         "documentation" => vec![("coding", 2.0), ("chinese", 4.0), ("speed", 3.0)],
         "refactoring" => vec![("coding", 5.0), ("reasoning", 3.0)],
-        "research" => vec![("reasoning", 5.0), ("chinese", 2.0)],
+        "multimodal_parsing" => vec![
+            ("multimodal", 5.0),
+            ("reasoning", 3.0),
+            ("long_context", 2.0),
+        ],
+        "research" => vec![("reasoning", 5.0), ("chinese", 2.0), ("long_context", 3.0)],
         "integration" => vec![("coding", 4.0), ("tool_use", 4.0), ("reasoning", 2.0)],
         _ => vec![("coding", 3.0), ("reasoning", 3.0)],
     }
@@ -156,21 +189,58 @@ impl Default for ModelCapabilityInput {
 // Get all available task types
 #[tauri::command]
 pub fn get_task_types() -> Vec<serde_json::Value> {
-    vec![
-        serde_json::json!({"id": "requirement_analysis", "name": "Requirement Analysis", "description": "Analyze and break down project requirements"}),
-        serde_json::json!({"id": "architecture_design", "name": "Architecture Design", "description": "Design system architecture and technical decisions"}),
-        serde_json::json!({"id": "repo_understanding", "name": "Repository Understanding", "description": "Understand existing codebase structure"}),
-        serde_json::json!({"id": "frontend_coding", "name": "Frontend Coding", "description": "Implement UI components and frontend logic"}),
-        serde_json::json!({"id": "backend_coding", "name": "Backend Coding", "description": "Implement API and backend services"}),
-        serde_json::json!({"id": "database_design", "name": "Database Design", "description": "Design database schema and queries"}),
-        serde_json::json!({"id": "test_generation", "name": "Test Generation", "description": "Write unit and integration tests"}),
-        serde_json::json!({"id": "debugging", "name": "Debugging", "description": "Find and fix bugs"}),
-        serde_json::json!({"id": "code_review", "name": "Code Review", "description": "Review code quality and best practices"}),
-        serde_json::json!({"id": "security_review", "name": "Security Review", "description": "Check for security vulnerabilities"}),
-        serde_json::json!({"id": "documentation", "name": "Documentation", "description": "Write documentation and README"}),
-        serde_json::json!({"id": "refactoring", "name": "Refactoring", "description": "Improve code structure without changing behavior"}),
-        serde_json::json!({"id": "integration", "name": "Integration", "description": "Integrate different components"}),
-    ]
+    // Single source of truth: iterate over the TaskType enum's ALL slice.
+    // This guarantees the UI, router, and agents see exactly the same set.
+    let descriptions = [
+        (
+            "Requirement Analysis",
+            "Analyze and break down project requirements",
+        ),
+        (
+            "Architecture Design",
+            "Design system architecture and technical decisions",
+        ),
+        (
+            "Repository Understanding",
+            "Understand existing codebase structure",
+        ),
+        (
+            "Frontend Coding",
+            "Implement UI components and frontend logic",
+        ),
+        ("Backend Coding", "Implement API and backend services"),
+        ("Database Design", "Design database schema and queries"),
+        ("Test Generation", "Write unit and integration tests"),
+        ("Debugging", "Find and fix bugs"),
+        ("Code Review", "Review code quality and best practices"),
+        ("Security Review", "Check for security vulnerabilities"),
+        ("Documentation", "Write documentation and README"),
+        (
+            "Refactoring",
+            "Improve code structure without changing behavior",
+        ),
+        (
+            "Multimodal Parsing",
+            "Parse and understand images, audio, and video inputs",
+        ),
+        (
+            "Research",
+            "Investigate technologies, libraries, and best practices",
+        ),
+        ("Integration", "Integrate different components and services"),
+    ];
+
+    TaskType::ALL
+        .iter()
+        .zip(descriptions.iter())
+        .map(|(t, (name, desc))| {
+            serde_json::json!({
+                "id": t.as_str(),
+                "name": name,
+                "description": desc,
+            })
+        })
+        .collect()
 }
 
 // Route a task to the best model
@@ -182,8 +252,9 @@ pub fn route_task(
     let conn = db.connection();
 
     // Get all enabled providers and their models
-    let mut stmt = conn.prepare(
-        "SELECT p.id, p.name, p.provider_type, m.id as model_id, m.model_id,
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.id, p.name, p.provider_type, m.id as model_id, m.model_id,
                 m.context_window, m.input_price, m.output_price,
                 c.reasoning, c.coding, c.code_review, c.long_context, c.speed,
                 c.low_cost, c.tool_use, c.json_reliability, c.multimodal,
@@ -191,33 +262,36 @@ pub fn route_task(
          FROM provider_configs p
          LEFT JOIN model_profiles m ON m.provider_id = p.id AND m.is_default = 1
          LEFT JOIN model_capabilities c ON c.model_profile_id = m.id
-         WHERE p.is_enabled = 1"
-    ).map_err(|e| e.to_string())?;
+         WHERE p.is_enabled = 1",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, Option<String>>(3)?,
-            row.get::<_, Option<String>>(4)?,
-            row.get::<_, Option<i32>>(5)?,
-            row.get::<_, Option<f64>>(6)?,
-            row.get::<_, Option<f64>>(7)?,
-            row.get::<_, Option<i32>>(8)?,
-            row.get::<_, Option<i32>>(9)?,
-            row.get::<_, Option<i32>>(10)?,
-            row.get::<_, Option<i32>>(11)?,
-            row.get::<_, Option<i32>>(12)?,
-            row.get::<_, Option<i32>>(13)?,
-            row.get::<_, Option<i32>>(14)?,
-            row.get::<_, Option<i32>>(15)?,
-            row.get::<_, Option<i32>>(16)?,
-            row.get::<_, Option<i32>>(17)?,
-            row.get::<_, Option<i32>>(18)?,
-            row.get::<_, Option<i32>>(19)?,
-        ))
-    }).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<i32>>(5)?,
+                row.get::<_, Option<f64>>(6)?,
+                row.get::<_, Option<f64>>(7)?,
+                row.get::<_, Option<i32>>(8)?,
+                row.get::<_, Option<i32>>(9)?,
+                row.get::<_, Option<i32>>(10)?,
+                row.get::<_, Option<i32>>(11)?,
+                row.get::<_, Option<i32>>(12)?,
+                row.get::<_, Option<i32>>(13)?,
+                row.get::<_, Option<i32>>(14)?,
+                row.get::<_, Option<i32>>(15)?,
+                row.get::<_, Option<i32>>(16)?,
+                row.get::<_, Option<i32>>(17)?,
+                row.get::<_, Option<i32>>(18)?,
+                row.get::<_, Option<i32>>(19)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
 
     let weights = get_task_weights(&input.task_type);
     let mut decisions = Vec::new();
@@ -225,14 +299,34 @@ pub fn route_task(
     for row_result in rows {
         let row = row_result.map_err(|e| e.to_string())?;
 
-        let (provider_id, provider_name, _provider_type, model_id, model_id_name,
-             context_window, input_price, output_price, reasoning, coding,
-             code_review, long_context, speed, low_cost, tool_use, json_reliability,
-             multimodal, chinese, local_deploy, rag) = row;
+        let (
+            provider_id,
+            provider_name,
+            _provider_type,
+            model_id,
+            model_id_name,
+            context_window,
+            input_price,
+            output_price,
+            reasoning,
+            coding,
+            code_review,
+            long_context,
+            speed,
+            low_cost,
+            tool_use,
+            json_reliability,
+            multimodal,
+            chinese,
+            local_deploy,
+            rag,
+        ) = row;
 
         // Skip if no model
         let Some(mid) = model_id else { continue };
-        let Some(mid_name) = model_id_name else { continue };
+        let Some(mid_name) = model_id_name else {
+            continue;
+        };
 
         // Calculate score based on task weights
         let mut total_score = 0.0;
@@ -290,7 +384,11 @@ pub fn route_task(
     }
 
     // Sort by score descending
-    decisions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    decisions.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Set fallback - save first provider_id before loop
     if decisions.len() > 1 {
@@ -341,70 +439,80 @@ pub fn get_routing_history(
 ) -> Result<Vec<serde_json::Value>, String> {
     let conn = db.connection();
 
-    let mut stmt = conn.prepare(
-        "SELECT id, task_id, selected_provider_id, selected_model_profile_id,
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, task_id, selected_provider_id, selected_model_profile_id,
                 final_score, reason, created_at
          FROM routing_history
          WHERE task_id = ?1
          ORDER BY created_at DESC
-         LIMIT 10"
-    ).map_err(|e| e.to_string())?;
+         LIMIT 10",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let history = stmt.query_map(params![task_id], |row| {
-        Ok(serde_json::json!({
-            "id": row.get::<_, String>(0)?,
-            "task_id": row.get::<_, String>(1)?,
-            "provider_id": row.get::<_, String>(2)?,
-            "model_profile_id": row.get::<_, String>(3)?,
-            "score": row.get::<_, f64>(4)?,
-            "reason": row.get::<_, String>(5)?,
-            "created_at": row.get::<_, String>(6)?,
-        }))
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+    let history = stmt
+        .query_map(params![task_id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "task_id": row.get::<_, String>(1)?,
+                "provider_id": row.get::<_, String>(2)?,
+                "model_profile_id": row.get::<_, String>(3)?,
+                "score": row.get::<_, f64>(4)?,
+                "reason": row.get::<_, String>(5)?,
+                "created_at": row.get::<_, String>(6)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     Ok(history)
 }
 
 // Get all available providers with their models for routing UI
 #[tauri::command]
-pub fn get_available_models_for_routing(db: State<Database>) -> Result<Vec<serde_json::Value>, String> {
+pub fn get_available_models_for_routing(
+    db: State<Database>,
+) -> Result<Vec<serde_json::Value>, String> {
     let conn = db.connection();
 
-    let mut stmt = conn.prepare(
-        "SELECT p.id, p.name, p.provider_type, p.base_url,
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.id, p.name, p.provider_type, p.base_url,
                 m.id, m.model_id, m.display_model_name, m.context_window,
                 c.reasoning, c.coding, c.code_review, c.speed, c.low_cost, c.chinese
          FROM provider_configs p
          LEFT JOIN model_profiles m ON m.provider_id = p.id
          LEFT JOIN model_capabilities c ON c.model_profile_id = m.id
          WHERE p.is_enabled = 1 AND m.id IS NOT NULL
-         ORDER BY p.name, m.display_model_name"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY p.name, m.display_model_name",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let models = stmt.query_map([], |row| {
-        Ok(serde_json::json!({
-            "provider_id": row.get::<_, String>(0)?,
-            "provider_name": row.get::<_, String>(1)?,
-            "provider_type": row.get::<_, String>(2)?,
-            "base_url": row.get::<_, String>(3)?,
-            "model_profile_id": row.get::<_, String>(4)?,
-            "model_id": row.get::<_, String>(5)?,
-            "display_name": row.get::<_, Option<String>>(6)?,
-            "context_window": row.get::<_, Option<i32>>(7)?,
-            "capabilities": {
-                "reasoning": row.get::<_, Option<i32>>(8)?,
-                "coding": row.get::<_, Option<i32>>(9)?,
-                "code_review": row.get::<_, Option<i32>>(10)?,
-                "speed": row.get::<_, Option<i32>>(11)?,
-                "low_cost": row.get::<_, Option<i32>>(12)?,
-                "chinese": row.get::<_, Option<i32>>(13)?,
-            }
-        }))
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+    let models = stmt
+        .query_map([], |row| {
+            Ok(serde_json::json!({
+                "provider_id": row.get::<_, String>(0)?,
+                "provider_name": row.get::<_, String>(1)?,
+                "provider_type": row.get::<_, String>(2)?,
+                "base_url": row.get::<_, String>(3)?,
+                "model_profile_id": row.get::<_, String>(4)?,
+                "model_id": row.get::<_, String>(5)?,
+                "display_name": row.get::<_, Option<String>>(6)?,
+                "context_window": row.get::<_, Option<i32>>(7)?,
+                "capabilities": {
+                    "reasoning": row.get::<_, Option<i32>>(8)?,
+                    "coding": row.get::<_, Option<i32>>(9)?,
+                    "code_review": row.get::<_, Option<i32>>(10)?,
+                    "speed": row.get::<_, Option<i32>>(11)?,
+                    "low_cost": row.get::<_, Option<i32>>(12)?,
+                    "chinese": row.get::<_, Option<i32>>(13)?,
+                }
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     Ok(models)
 }

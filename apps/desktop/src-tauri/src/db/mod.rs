@@ -1,24 +1,29 @@
 use rusqlite::{Connection, Result};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub mod schema;
 
+#[derive(Clone)]
 pub struct Database {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl Database {
     pub fn new(db_path: PathBuf) -> Result<Self> {
         let conn = Connection::open(&db_path)?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     pub fn initialize(&self) -> Result<()> {
@@ -29,11 +34,5 @@ impl Database {
 
     pub fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap()
-    }
-}
-
-impl Drop for Database {
-    fn drop(&mut self) {
-        // Connection is automatically closed when dropped
     }
 }

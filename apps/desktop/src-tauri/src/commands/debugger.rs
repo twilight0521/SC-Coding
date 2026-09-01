@@ -1,10 +1,10 @@
 use crate::db::Database;
-use tauri::State;
-use rusqlite::params;
 use chrono::Utc;
-use uuid::Uuid;
+use rusqlite::params;
 use std::path::Path;
 use std::process::Command;
+use tauri::State;
+use uuid::Uuid;
 
 // ==================== DEBUGGER COMMANDS ====================
 
@@ -47,11 +47,13 @@ pub fn start_debug_session(
     let conn = db.connection();
 
     // Verify task exists
-    let (_project_id, title): (String, String) = conn.query_row(
-        "SELECT project_id, title FROM tasks WHERE id = ?1",
-        params![task_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).map_err(|e| e.to_string())?;
+    let (_project_id, title): (String, String) = conn
+        .query_row(
+            "SELECT project_id, title FROM tasks WHERE id = ?1",
+            params![task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
 
     let session_id = Uuid::new_v4().to_string();
     let now = Utc::now();
@@ -70,7 +72,8 @@ pub fn start_debug_session(
             max,
             now.to_rfc3339()
         ],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(DebugSession {
         session_id,
@@ -98,13 +101,14 @@ pub fn record_fix_attempt(
     let conn = db.connection();
 
     // Get current session state
-    let (task_id, current_round, max_rounds, existing_history): (String, i32, i32, String) =
-        conn.query_row(
+    let (task_id, current_round, max_rounds, existing_history): (String, i32, i32, String) = conn
+        .query_row(
             "SELECT task_id, current_round, max_rounds, fix_history_json
              FROM debug_sessions WHERE id = ?1",
             params![session_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
     let new_round = current_round + 1;
     let status = if test_passed {
@@ -145,7 +149,8 @@ pub fn record_fix_attempt(
          SET current_round = ?1, status = ?2, fix_history_json = ?3
          WHERE id = ?4",
         params![new_round, status, history_json, session_id],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(DebugSession {
         session_id,
@@ -166,16 +171,24 @@ pub fn get_debug_session(
 ) -> Result<Option<DebugSession>, String> {
     let conn = db.connection();
 
-    let result: Option<(String, String, String, i32, i32, String, String)> =
-        conn.query_row(
+    let result: Option<(String, String, String, i32, i32, String, String)> = conn
+        .query_row(
             "SELECT id, task_id, status, current_round, max_rounds, fix_history_json, created_at
              FROM debug_sessions WHERE id = ?1",
             params![session_id],
-            |row| Ok((
-                row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
-                row.get(4)?, row.get(5)?, row.get(6)?
-            )),
-        ).ok();
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .ok();
 
     match result {
         Some((id, task_id, status, current_round, max_rounds, history_json, created_at)) => {
@@ -207,34 +220,38 @@ pub fn get_active_debug_sessions(
 ) -> Result<Vec<DebugSession>, String> {
     let conn = db.connection();
 
-    let mut stmt = conn.prepare(
-        "SELECT id, task_id, status, current_round, max_rounds, fix_history_json, created_at
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, task_id, status, current_round, max_rounds, fix_history_json, created_at
          FROM debug_sessions
          WHERE task_id = ?1 AND status = 'active'
-         ORDER BY created_at DESC"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let sessions = stmt.query_map(params![task_id], |row| {
-        let history_json: String = row.get(5)?;
-        let created_at: String = row.get(6)?;
-        let fix_history: Vec<FixAttempt> = if history_json.is_empty() {
-            vec![]
-        } else {
-            serde_json::from_str(&history_json).unwrap_or_default()
-        };
+    let sessions = stmt
+        .query_map(params![task_id], |row| {
+            let history_json: String = row.get(5)?;
+            let created_at: String = row.get(6)?;
+            let fix_history: Vec<FixAttempt> = if history_json.is_empty() {
+                vec![]
+            } else {
+                serde_json::from_str(&history_json).unwrap_or_default()
+            };
 
-        Ok(DebugSession {
-            session_id: row.get(0)?,
-            task_id: row.get(1)?,
-            status: row.get(2)?,
-            current_round: row.get(3)?,
-            max_rounds: row.get(4)?,
-            fix_history,
-            created_at,
+            Ok(DebugSession {
+                session_id: row.get(0)?,
+                task_id: row.get(1)?,
+                status: row.get(2)?,
+                current_round: row.get(3)?,
+                max_rounds: row.get(4)?,
+                fix_history,
+                created_at,
+            })
         })
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     Ok(sessions)
 }
@@ -297,38 +314,42 @@ pub fn get_debug_history(
     let conn = db.connection();
     let limit = limit.unwrap_or(50);
 
-    let mut stmt = conn.prepare(
-        "SELECT ds.id, ds.task_id, ds.status, ds.current_round, ds.max_rounds,
+    let mut stmt = conn
+        .prepare(
+            "SELECT ds.id, ds.task_id, ds.status, ds.current_round, ds.max_rounds,
                 ds.fix_history_json, ds.created_at, t.title
          FROM debug_sessions ds
          JOIN tasks t ON ds.task_id = t.id
          WHERE t.project_id = ?1
          ORDER BY ds.created_at DESC
-         LIMIT ?2"
-    ).map_err(|e| e.to_string())?;
+         LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let history = stmt.query_map(params![project_id, limit], |row| {
-        let history_json: String = row.get(5)?;
-        let created_at: String = row.get(6)?;
-        let fix_history: Vec<FixAttempt> = if history_json.is_empty() {
-            vec![]
-        } else {
-            serde_json::from_str(&history_json).unwrap_or_default()
-        };
+    let history = stmt
+        .query_map(params![project_id, limit], |row| {
+            let history_json: String = row.get(5)?;
+            let created_at: String = row.get(6)?;
+            let fix_history: Vec<FixAttempt> = if history_json.is_empty() {
+                vec![]
+            } else {
+                serde_json::from_str(&history_json).unwrap_or_default()
+            };
 
-        Ok(serde_json::json!({
-            "session_id": row.get::<_, String>(0)?,
-            "task_id": row.get::<_, String>(1)?,
-            "task_title": row.get::<_, String>(7)?,
-            "status": row.get::<_, String>(2)?,
-            "current_round": row.get::<_, i32>(3)?,
-            "max_rounds": row.get::<_, i32>(4)?,
-            "fix_history": fix_history,
-            "created_at": created_at,
-        }))
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({
+                "session_id": row.get::<_, String>(0)?,
+                "task_id": row.get::<_, String>(1)?,
+                "task_title": row.get::<_, String>(7)?,
+                "status": row.get::<_, String>(2)?,
+                "current_round": row.get::<_, i32>(3)?,
+                "max_rounds": row.get::<_, i32>(4)?,
+                "fix_history": fix_history,
+                "created_at": created_at,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     Ok(history)
 }
@@ -346,13 +367,9 @@ pub fn close_debug_session(
         "UPDATE debug_sessions
          SET status = ?1, resolution = ?2, completed_at = ?3
          WHERE id = ?4",
-        params![
-            "closed",
-            resolution,
-            Utc::now().to_rfc3339(),
-            session_id
-        ],
-    ).map_err(|e| e.to_string())?;
+        params!["closed", resolution, Utc::now().to_rfc3339(), session_id],
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }

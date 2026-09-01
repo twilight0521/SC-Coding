@@ -1,9 +1,12 @@
 use crate::db::Database;
 use crate::models::get_default_presets;
+use crate::providers::ProviderRegistry;
+use crate::runtime;
 use crate::security::SecretStore;
 use chrono::Utc;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tauri::State;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,19 +48,21 @@ pub fn list_providers(db: State<Database>) -> Result<Vec<ProviderResponse>, Stri
          FROM provider_configs ORDER BY name"
     ).map_err(|e| e.to_string())?;
 
-    let providers = stmt.query_map([], |row| {
-        Ok(ProviderResponse {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            provider_type: row.get(2)?,
-            base_url: row.get(3)?,
-            default_model_id: row.get(4)?,
-            display_model_name: row.get(5)?,
-            is_enabled: row.get::<_, i32>(6)? == 1,
+    let providers = stmt
+        .query_map([], |row| {
+            Ok(ProviderResponse {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                provider_type: row.get(2)?,
+                base_url: row.get(3)?,
+                default_model_id: row.get(4)?,
+                display_model_name: row.get(5)?,
+                is_enabled: row.get::<_, i32>(6)? == 1,
+            })
         })
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     Ok(providers)
 }
@@ -73,14 +78,17 @@ pub fn get_provider_presets() -> Vec<crate::models::ProviderPreset> {
 pub fn create_provider(
     db: State<Database>,
     secret_store: State<SecretStore>,
+    registry: State<Arc<ProviderRegistry>>,
     request: CreateProviderRequest,
 ) -> Result<ProviderResponse, String> {
     let conn = db.connection();
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now();
-    let api_key_ref = request.api_key.as_ref().map(|key| {
-        secret_store.store(key).map_err(|e| e.to_string())
-    }).transpose()?;
+    let api_key_ref = request
+        .api_key
+        .as_ref()
+        .map(|key| secret_store.store(key).map_err(|e| e.to_string()))
+        .transpose()?;
 
     conn.execute(
         "INSERT INTO provider_configs
@@ -97,7 +105,35 @@ pub fn create_provider(
             request.display_model_name,
             now.to_rfc3339()
         ],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Create a default model profile + capabilities so the capability
+    // router has data to score. Without this, routing always returns empty.
+    let model_profile_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO model_profiles
+         (id, provider_id, model_id, display_model_name, is_default, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)",
+        params![
+            model_profile_id,
+            id,
+            request.default_model_id,
+            request.display_model_name,
+            now.to_rfc3339()
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "INSERT INTO model_capabilities (model_profile_id, updated_at) VALUES (?1, ?2)",
+        params![model_profile_id, now.to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Register the new adapter in the registry
+    let api_key = request.api_key.clone();
+    runtime::update_provider_adapter(&registry, &id, request.base_url.clone(), api_key);
 
     Ok(ProviderResponse {
         id,
@@ -114,6 +150,8 @@ pub fn create_provider(
 #[tauri::command]
 pub fn update_provider(
     db: State<Database>,
+    secret_store: State<SecretStore>,
+    registry: State<Arc<ProviderRegistry>>,
     id: String,
     name: Option<String>,
     base_url: Option<String>,
@@ -155,8 +193,39 @@ pub fn update_provider(
         updates.join(", ")
     );
 
-    conn.execute(&sql, rusqlite::params_from_iter(params_vec.iter().map(|p| p.as_ref())))
+    conn.execute(
+        &sql,
+        rusqlite::params_from_iter(params_vec.iter().map(|p| p.as_ref())),
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Update the registry - fetch current config and rebuild adapter
+    let new_base_url: String = conn
+        .query_row(
+            "SELECT base_url FROM provider_configs WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
         .map_err(|e| e.to_string())?;
+
+    let api_key_ref: Option<String> = conn
+        .query_row(
+            "SELECT api_key_ref FROM provider_configs WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .ok();
+
+    let api_key = api_key_ref.and_then(|key_ref| secret_store.retrieve(&key_ref).ok());
+
+    if let Some(enabled) = is_enabled {
+        if !enabled {
+            runtime::remove_provider_adapter(&registry, &id);
+            return Ok(());
+        }
+    }
+
+    runtime::update_provider_adapter(&registry, &id, new_base_url, api_key);
 
     Ok(())
 }
@@ -166,16 +235,19 @@ pub fn update_provider(
 pub fn delete_provider(
     db: State<Database>,
     secret_store: State<SecretStore>,
+    registry: State<Arc<ProviderRegistry>>,
     id: String,
 ) -> Result<(), String> {
     let conn = db.connection();
 
     // First get the api_key_ref to delete from secret store
-    let api_key_ref: Option<String> = conn.query_row(
-        "SELECT api_key_ref FROM provider_configs WHERE id = ?1",
-        params![id],
-        |row| row.get(0),
-    ).ok();
+    let api_key_ref: Option<String> = conn
+        .query_row(
+            "SELECT api_key_ref FROM provider_configs WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .ok();
 
     // Delete from secret store if exists
     if let Some(key_ref) = api_key_ref {
@@ -185,6 +257,9 @@ pub fn delete_provider(
     // Delete the provider (cascade will handle model_profiles and model_capabilities)
     conn.execute("DELETE FROM provider_configs WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+
+    // Remove from registry
+    runtime::remove_provider_adapter(&registry, &id);
 
     Ok(())
 }
@@ -207,14 +282,18 @@ pub async fn test_provider_connection(
         "max_tokens": 5
     });
 
-    let mut request = client.post(format!("{}/chat/completions", base_url))
+    let mut request = client
+        .post(format!("{}/chat/completions", base_url))
         .header("Content-Type", "application/json");
 
     if let Some(key) = api_key {
         request = request.header("Authorization", format!("Bearer {}", key));
     }
 
-    let response = request.json(&request_body).send().await
+    let response = request
+        .json(&request_body)
+        .send()
+        .await
         .map_err(|e| e.to_string())?;
 
     let latency = start.elapsed().as_millis() as u64;
@@ -269,28 +348,32 @@ pub struct AgentResponse {
 pub fn list_agents(db: State<Database>) -> Result<Vec<AgentResponse>, String> {
     let conn = db.connection();
 
-    let mut stmt = conn.prepare(
-        "SELECT id, name, role, description, system_prompt, primary_provider_id,
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, role, description, system_prompt, primary_provider_id,
                 primary_model_profile_id, budget_limit, max_runtime_ms, is_enabled
-         FROM agents ORDER BY name"
-    ).map_err(|e| e.to_string())?;
+         FROM agents ORDER BY name",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let agents = stmt.query_map([], |row| {
-        Ok(AgentResponse {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            role: row.get(2)?,
-            description: row.get(3)?,
-            system_prompt: row.get(4)?,
-            primary_provider_id: row.get(5)?,
-            primary_model_profile_id: row.get(6)?,
-            budget_limit: row.get(7)?,
-            max_runtime_ms: row.get(8)?,
-            is_enabled: row.get::<_, i32>(9)? == 1,
+    let agents = stmt
+        .query_map([], |row| {
+            Ok(AgentResponse {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                role: row.get(2)?,
+                description: row.get(3)?,
+                system_prompt: row.get(4)?,
+                primary_provider_id: row.get(5)?,
+                primary_model_profile_id: row.get(6)?,
+                budget_limit: row.get(7)?,
+                max_runtime_ms: row.get(8)?,
+                is_enabled: row.get::<_, i32>(9)? == 1,
+            })
         })
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     Ok(agents)
 }
@@ -319,7 +402,8 @@ pub fn get_agent(db: State<Database>, id: String) -> Result<AgentResponse, Strin
                 is_enabled: row.get::<_, i32>(9)? == 1,
             })
         },
-    ).map_err(|e| e.to_string())
+    )
+    .map_err(|e| e.to_string())
 }
 
 // Create a new agent
@@ -351,12 +435,20 @@ pub fn create_agent(
         ],
     ).map_err(|e| e.to_string())?;
 
-    // Create default permissions
+    // Create role-based least-privilege defaults.
+    let (can_read_files, can_write_files, can_execute_commands, can_delete_files) =
+        match request.role.as_str() {
+            "coder" | "frontend_engineer" | "backend_engineer" | "fullstack_engineer"
+            | "debugger" | "debug_engineer" => (true, true, false, false),
+            "tester" | "test_engineer" => (true, false, true, false),
+            _ => (true, false, false, false),
+        };
+
     conn.execute(
         "INSERT INTO agent_permissions (agent_id, can_read_files, can_write_files, can_execute_commands,
          can_install_dependencies, can_access_network, can_modify_env_files, can_delete_files)
-         VALUES (?1, 1, 0, 0, 0, 0, 0, 0)",
-        params![id],
+         VALUES (?1, ?2, ?3, ?4, 0, 0, 0, ?5)",
+        params![id, can_read_files as i32, can_write_files as i32, can_execute_commands as i32, can_delete_files as i32],
     ).map_err(|e| e.to_string())?;
 
     Ok(AgentResponse {
@@ -435,8 +527,11 @@ pub fn update_agent(
 
     let sql = format!("UPDATE agents SET {} WHERE id = ?", updates.join(", "));
 
-    conn.execute(&sql, rusqlite::params_from_iter(params_vec.iter().map(|p| p.as_ref())))
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        &sql,
+        rusqlite::params_from_iter(params_vec.iter().map(|p| p.as_ref())),
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -447,10 +542,16 @@ pub fn delete_agent(db: State<Database>, id: String) -> Result<(), String> {
     let conn = db.connection();
 
     // Delete related records first
-    conn.execute("DELETE FROM agent_permissions WHERE agent_id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM agent_fallback_providers WHERE agent_id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM agent_permissions WHERE agent_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM agent_fallback_providers WHERE agent_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
 
     // Delete agent
     conn.execute("DELETE FROM agents WHERE id = ?1", params![id])
@@ -588,15 +689,21 @@ pub fn update_agent_permissions(
         updates.join(", ")
     );
 
-    conn.execute(&sql, rusqlite::params_from_iter(params_vec.iter().map(|p| p.as_ref())))
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        &sql,
+        rusqlite::params_from_iter(params_vec.iter().map(|p| p.as_ref())),
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
 // Get agent permissions
 #[tauri::command]
-pub fn get_agent_permissions(db: State<Database>, agent_id: String) -> Result<serde_json::Value, String> {
+pub fn get_agent_permissions(
+    db: State<Database>,
+    agent_id: String,
+) -> Result<serde_json::Value, String> {
     let conn = db.connection();
 
     conn.query_row(
@@ -615,5 +722,6 @@ pub fn get_agent_permissions(db: State<Database>, agent_id: String) -> Result<se
                 "can_delete_files": row.get::<_, i32>(6)? == 1,
             }))
         },
-    ).map_err(|e| e.to_string())
+    )
+    .map_err(|e| e.to_string())
 }

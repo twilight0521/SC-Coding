@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../stores/appStore";
 import { Button } from "../components/ui/Button";
 import { FileTree } from "../components/FileTree";
 import { TaskList } from "../components/TaskList";
 import { TaskRunnerPanel, DecisionLogViewer } from "../components/TaskRunnerPanel";
+import { FileChangesPanel } from "../components/FileChangesPanel";
 import { TestRunner, TestHistory } from "../components/TestRunner";
 import { DebugPanel, ErrorAnalyzer } from "../components/DebugPanel";
 import { ScenarioPlanner, OrchestratorReportViewer } from "../components/Orchestrator";
@@ -65,9 +67,13 @@ export function ProjectDetailPage() {
   const handleStartRun = async () => {
     if (!projectId) return;
     try {
-      await createProjectRun(projectId);
+      const run = await createProjectRun(projectId);
       setIsRunning(true);
+      await invoke("start_run", { projectRunId: run.id });
+      setIsRunning(false);
+      await fetchProjectRuns(projectId);
     } catch (err) {
+      setIsRunning(false);
       console.error(err);
     }
   };
@@ -223,11 +229,8 @@ export function ProjectDetailPage() {
               </div>
             </>
           ) : rightPanel === 'taskrunner' ? (
-            <div className="flex-1 flex items-center justify-center text-muted-foreground">
-              <div className="text-center">
-                <Play size={48} className="mx-auto mb-4 opacity-50" />
-                <p>Select tasks and run them</p>
-              </div>
+            <div className="flex-1 overflow-hidden">
+              <FileChangesPanel projectId={projectId || ''} />
             </div>
           ) : rightPanel === 'tester' ? (
             <div className="flex-1 flex items-center justify-center text-muted-foreground">

@@ -5,7 +5,18 @@ import { Button } from "../components/ui/Button";
 import { Input, Label } from "../components/ui/Input";
 
 export function ProvidersPage() {
-  const { providers, presets, fetchProviders, fetchPresets, createProvider, deleteProvider, testConnection } = useAppStore();
+  const {
+    providers,
+    presets,
+    fetchProviders,
+    fetchPresets,
+    createProvider,
+    deleteProvider,
+    testConnection,
+    getProviderTypes,
+  } = useAppStore();
+
+  const providerTypeOptions = getProviderTypes();
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState({
     name: "",
@@ -81,14 +92,35 @@ export function ProvidersPage() {
                   <select
                     className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
                     value={formData.provider_type}
-                    onChange={(e) => setFormData({ ...formData, provider_type: e.target.value })}
+                    onChange={(e) => {
+                      const newType = e.target.value;
+                      // Auto-apply preset if selected type matches a preset
+                      const matchingPreset = presets.find(p => p.provider_type === newType);
+                      if (matchingPreset) {
+                        setFormData({
+                          ...formData,
+                          provider_type: newType,
+                          base_url: formData.base_url || matchingPreset.base_url,
+                          default_model_id: formData.default_model_id || matchingPreset.default_model,
+                          display_model_name: formData.display_model_name || matchingPreset.default_model,
+                        });
+                      } else {
+                        setFormData({ ...formData, provider_type: newType });
+                      }
+                    }}
                   >
-                    <option value="openai_compatible">OpenAI Compatible</option>
-                    <option value="minimax">Minimax</option>
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="ollama">Ollama</option>
-                    <option value="lmstudio">LM Studio</option>
+                    {providerTypeOptions.map(opt => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.name}
+                        {opt.source === 'preset' ? ' ★' : ''}
+                      </option>
+                    ))}
                   </select>
+                  {presets.length === 0 && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      No presets loaded. You can manually configure an OpenAI-compatible endpoint.
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">

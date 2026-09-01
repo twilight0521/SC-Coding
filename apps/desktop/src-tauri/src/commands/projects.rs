@@ -1,11 +1,11 @@
-use serde::{Deserialize, Serialize};
 use crate::db::Database;
-use tauri::State;
-use rusqlite::params;
 use chrono::Utc;
-use uuid::Uuid;
+use rusqlite::params;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use tauri::State;
+use uuid::Uuid;
 
 // ==================== PROJECT COMMANDS ====================
 
@@ -34,25 +34,29 @@ pub struct ProjectResponse {
 pub fn list_projects(db: State<Database>) -> Result<Vec<ProjectResponse>, String> {
     let conn = db.connection();
 
-    let mut stmt = conn.prepare(
-        "SELECT id, name, path, type, tech_stack, budget_limit, created_at, updated_at
-         FROM projects ORDER BY updated_at DESC"
-    ).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, path, type, tech_stack, budget_limit, created_at, updated_at
+         FROM projects ORDER BY updated_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let projects = stmt.query_map([], |row| {
-        Ok(ProjectResponse {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            path: row.get(2)?,
-            project_type: row.get(3)?,
-            tech_stack: row.get(4)?,
-            budget_limit: row.get(5)?,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
+    let projects = stmt
+        .query_map([], |row| {
+            Ok(ProjectResponse {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+                project_type: row.get(3)?,
+                tech_stack: row.get(4)?,
+                budget_limit: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
         })
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     Ok(projects)
 }
@@ -78,7 +82,8 @@ pub fn get_project(db: State<Database>, id: String) -> Result<ProjectResponse, S
                 updated_at: row.get(7)?,
             })
         },
-    ).map_err(|e| e.to_string())
+    )
+    .map_err(|e| e.to_string())
 }
 
 // Create a new project
@@ -107,7 +112,8 @@ pub fn create_project(
             request.tech_stack,
             now.to_rfc3339()
         ],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(ProjectResponse {
         id,
@@ -158,8 +164,11 @@ pub fn update_project(
 
     let sql = format!("UPDATE projects SET {} WHERE id = ?", updates.join(", "));
 
-    conn.execute(&sql, rusqlite::params_from_iter(params_vec.iter().map(|p| p.as_ref())))
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        &sql,
+        rusqlite::params_from_iter(params_vec.iter().map(|p| p.as_ref())),
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -172,8 +181,11 @@ pub fn delete_project(db: State<Database>, id: String) -> Result<(), String> {
     // Delete related records first
     conn.execute("DELETE FROM tasks WHERE project_id = ?1", params![id])
         .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM project_runs WHERE project_id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM project_runs WHERE project_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
 
     // Delete project
     conn.execute("DELETE FROM projects WHERE id = ?1", params![id])
@@ -206,11 +218,18 @@ pub fn list_directory(path: String) -> Result<Vec<FileNode>, String> {
         return Err("Path is not a directory".to_string());
     }
 
-    let entries = fs::read_dir(&path)
-        .map_err(|e| e.to_string())?;
+    let entries = fs::read_dir(&path).map_err(|e| e.to_string())?;
 
     let mut nodes = Vec::new();
-    let sensitive_patterns = [".env", ".git", "node_modules", "dist", "build", "target", ".DS_Store"];
+    let sensitive_patterns = [
+        ".env",
+        ".git",
+        "node_modules",
+        "dist",
+        "build",
+        "target",
+        ".DS_Store",
+    ];
 
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -236,12 +255,10 @@ pub fn list_directory(path: String) -> Result<Vec<FileNode>, String> {
     }
 
     // Sort: directories first, then by name
-    nodes.sort_by(|a, b| {
-        match (a.is_directory, b.is_directory) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    nodes.sort_by(|a, b| match (a.is_directory, b.is_directory) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
     Ok(nodes)
@@ -267,7 +284,8 @@ pub fn read_file(path: String, max_size: Option<u64>) -> Result<String, String> 
 
     // Check for sensitive extensions
     let sensitive_exts = [".env", ".pem", ".key", ".sqlite", ".db"];
-    let ext = path.extension()
+    let ext = path
+        .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
 
@@ -336,33 +354,37 @@ pub struct TaskResponse {
 pub fn list_tasks(db: State<Database>, project_id: String) -> Result<Vec<TaskResponse>, String> {
     let conn = db.connection();
 
-    let mut stmt = conn.prepare(
-        "SELECT id, project_id, title, description, task_type, complexity, risk_level,
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, project_id, title, description, task_type, complexity, risk_level,
                 status, assigned_agent_id, selected_provider_id, routing_reason,
                 acceptance_criteria, created_at, updated_at
-         FROM tasks WHERE project_id = ?1 ORDER BY created_at"
-    ).map_err(|e| e.to_string())?;
+         FROM tasks WHERE project_id = ?1 ORDER BY created_at",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let tasks = stmt.query_map(params![project_id], |row| {
-        Ok(TaskResponse {
-            id: row.get(0)?,
-            project_id: row.get(1)?,
-            title: row.get(2)?,
-            description: row.get(3)?,
-            task_type: row.get(4)?,
-            complexity: row.get(5)?,
-            risk_level: row.get(6)?,
-            status: row.get(7)?,
-            assigned_agent_id: row.get(8)?,
-            selected_provider_id: row.get(9)?,
-            routing_reason: row.get(10)?,
-            acceptance_criteria: row.get(11)?,
-            created_at: row.get(12)?,
-            updated_at: row.get(13)?,
+    let tasks = stmt
+        .query_map(params![project_id], |row| {
+            Ok(TaskResponse {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                title: row.get(2)?,
+                description: row.get(3)?,
+                task_type: row.get(4)?,
+                complexity: row.get(5)?,
+                risk_level: row.get(6)?,
+                status: row.get(7)?,
+                assigned_agent_id: row.get(8)?,
+                selected_provider_id: row.get(9)?,
+                routing_reason: row.get(10)?,
+                acceptance_criteria: row.get(11)?,
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
+            })
         })
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     Ok(tasks)
 }
@@ -393,7 +415,8 @@ pub fn create_task(
             request.acceptance_criteria,
             now.to_rfc3339()
         ],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(TaskResponse {
         id,
@@ -437,7 +460,8 @@ pub fn update_task_status(
             now.to_rfc3339(),
             id
         ],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -447,8 +471,11 @@ pub fn update_task_status(
 pub fn delete_task(db: State<Database>, id: String) -> Result<(), String> {
     let conn = db.connection();
 
-    conn.execute("DELETE FROM task_dependencies WHERE task_id = ?1 OR depends_on_task_id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM task_dependencies WHERE task_id = ?1 OR depends_on_task_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
 
@@ -512,32 +539,39 @@ pub fn create_project_run(
 
 // Get project runs
 #[tauri::command]
-pub fn get_project_runs(db: State<Database>, project_id: String) -> Result<Vec<ProjectRunResponse>, String> {
+pub fn get_project_runs(
+    db: State<Database>,
+    project_id: String,
+) -> Result<Vec<ProjectRunResponse>, String> {
     let conn = db.connection();
 
-    let mut stmt = conn.prepare(
-        "SELECT id, project_id, status, progress_percent, current_phase,
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, project_id, status, progress_percent, current_phase,
                 budget_limit, estimated_cost, actual_cost, started_at, completed_at, created_at
-         FROM project_runs WHERE project_id = ?1 ORDER BY created_at DESC"
-    ).map_err(|e| e.to_string())?;
+         FROM project_runs WHERE project_id = ?1 ORDER BY created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let runs = stmt.query_map(params![project_id], |row| {
-        Ok(ProjectRunResponse {
-            id: row.get(0)?,
-            project_id: row.get(1)?,
-            status: row.get(2)?,
-            progress_percent: row.get(3)?,
-            current_phase: row.get(4)?,
-            budget_limit: row.get(5)?,
-            estimated_cost: row.get(6)?,
-            actual_cost: row.get(7)?,
-            started_at: row.get(8)?,
-            completed_at: row.get(9)?,
-            created_at: row.get(10)?,
+    let runs = stmt
+        .query_map(params![project_id], |row| {
+            Ok(ProjectRunResponse {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                status: row.get(2)?,
+                progress_percent: row.get(3)?,
+                current_phase: row.get(4)?,
+                budget_limit: row.get(5)?,
+                estimated_cost: row.get(6)?,
+                actual_cost: row.get(7)?,
+                started_at: row.get(8)?,
+                completed_at: row.get(9)?,
+                created_at: row.get(10)?,
+            })
         })
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     Ok(runs)
 }
@@ -572,10 +606,16 @@ pub fn update_project_run_status(
 
     params_vec.push(Box::new(id.clone()));
 
-    let sql = format!("UPDATE project_runs SET {} WHERE id = ?", updates.join(", "));
+    let sql = format!(
+        "UPDATE project_runs SET {} WHERE id = ?",
+        updates.join(", ")
+    );
 
-    conn.execute(&sql, rusqlite::params_from_iter(params_vec.iter().map(|p| p.as_ref())))
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        &sql,
+        rusqlite::params_from_iter(params_vec.iter().map(|p| p.as_ref())),
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }

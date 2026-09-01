@@ -1,7 +1,7 @@
 use crate::db::Database;
-use tauri::State;
-use rusqlite::params;
 use chrono::Utc;
+use rusqlite::params;
+use tauri::State;
 use uuid::Uuid;
 
 // ==================== ORCHESTRATOR COMMANDS ====================
@@ -117,7 +117,8 @@ pub fn create_scenario_plan(
             routing_policy.to_string(),
             now.to_rfc3339()
         ],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(ScenarioPlan {
         id: plan_id,
@@ -141,30 +142,34 @@ pub fn get_scenario_plans(
 ) -> Result<Vec<ScenarioPlan>, String> {
     let conn = db.connection();
 
-    let mut stmt = conn.prepare(
-        "SELECT id, project_id, name, description, complexity, estimated_tasks,
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, project_id, name, description, complexity, estimated_tasks,
                 estimated_duration_minutes, agent_team_json, routing_policy_json, created_at
          FROM scenario_plans
          WHERE project_id = ?1
-         ORDER BY created_at DESC"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let plans = stmt.query_map(params![project_id], |row| {
-        Ok(ScenarioPlan {
-            id: row.get(0)?,
-            project_id: row.get(1)?,
-            name: row.get(2)?,
-            description: row.get(3)?,
-            complexity: row.get(4)?,
-            estimated_tasks: row.get(5)?,
-            estimated_duration_minutes: row.get(6)?,
-            agent_team_json: row.get(7)?,
-            routing_policy_json: row.get(8)?,
-            created_at: row.get(9)?,
+    let plans = stmt
+        .query_map(params![project_id], |row| {
+            Ok(ScenarioPlan {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                name: row.get(2)?,
+                description: row.get(3)?,
+                complexity: row.get(4)?,
+                estimated_tasks: row.get(5)?,
+                estimated_duration_minutes: row.get(6)?,
+                agent_team_json: row.get(7)?,
+                routing_policy_json: row.get(8)?,
+                created_at: row.get(9)?,
+            })
         })
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     Ok(plans)
 }
@@ -200,7 +205,8 @@ pub fn breakdown_task(
             serde_json::to_string(&execution_order).unwrap_or_default(),
             now.to_rfc3339()
         ],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(TaskBreakdown {
         id: breakdown_id,
@@ -225,11 +231,31 @@ fn generate_subtasks(task_type: &str, complexity: &str) -> Vec<Subtask> {
     match task_type {
         "requirement_analysis" => {
             let base = vec![
-                ("Analyze Requirements", "requirement_analysis", "Analyze and document requirements", "low", "low"),
-                ("Identify Stakeholders", "requirement_analysis", "Identify key stakeholders and their needs", "low", "low"),
-                ("Create Spec Document", "documentation", "Create detailed specification document", "medium", "medium"),
+                (
+                    "Analyze Requirements",
+                    "requirement_analysis",
+                    "Analyze and document requirements",
+                    "low",
+                    "low",
+                ),
+                (
+                    "Identify Stakeholders",
+                    "requirement_analysis",
+                    "Identify key stakeholders and their needs",
+                    "low",
+                    "low",
+                ),
+                (
+                    "Create Spec Document",
+                    "documentation",
+                    "Create detailed specification document",
+                    "medium",
+                    "medium",
+                ),
             ];
-            for (i, (title, ttype, desc, risk, cost)) in base.into_iter().take(multiplier * 2 + 1).enumerate() {
+            for (i, (title, ttype, desc, risk, cost)) in
+                base.into_iter().take(multiplier * 2 + 1).enumerate()
+            {
                 tasks.push(Subtask {
                     task_id: format!("subtask-{}", i + 1),
                     title: title.to_string(),
@@ -383,7 +409,11 @@ fn generate_subtasks(task_type: &str, complexity: &str) -> Vec<Subtask> {
         title: "Test & Verify".to_string(),
         task_type: "test_generation".to_string(),
         description: "Write and run tests to verify implementation".to_string(),
-        dependencies: if last_dep.is_empty() { vec![] } else { vec![last_dep] },
+        dependencies: if last_dep.is_empty() {
+            vec![]
+        } else {
+            vec![last_dep]
+        },
         complexity: "medium".to_string(),
         risk_level: "medium".to_string(),
         estimated_cost: 0.04,
@@ -430,7 +460,8 @@ pub fn create_orchestrator_report(
             false,
             now.to_rfc3339()
         ],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(OrchestratorReport {
         id: report_id,
@@ -459,43 +490,47 @@ pub fn get_orchestrator_reports(
 ) -> Result<Vec<OrchestratorReport>, String> {
     let conn = db.connection();
 
-    let mut stmt = conn.prepare(
-        "SELECT id, project_run_id, report_type, title, summary,
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, project_run_id, report_type, title, summary,
                 completed_items_json, current_risks_json, next_actions_json,
                 progress_percent, used_agents_json, used_models_json,
                 estimated_cost, actual_cost, requires_user_decision, created_at
          FROM orchestrator_reports
          WHERE project_run_id = ?1
-         ORDER BY created_at DESC"
-    ).map_err(|e| e.to_string())?;
+         ORDER BY created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let reports = stmt.query_map(params![project_run_id], |row| {
-        let completed_json: String = row.get(5)?;
-        let risks_json: String = row.get(6)?;
-        let actions_json: String = row.get(7)?;
-        let agents_json: String = row.get(9)?;
-        let models_json: String = row.get(10)?;
+    let reports = stmt
+        .query_map(params![project_run_id], |row| {
+            let completed_json: String = row.get(5)?;
+            let risks_json: String = row.get(6)?;
+            let actions_json: String = row.get(7)?;
+            let agents_json: String = row.get(9)?;
+            let models_json: String = row.get(10)?;
 
-        Ok(OrchestratorReport {
-            id: row.get(0)?,
-            project_run_id: row.get(1)?,
-            report_type: row.get(2)?,
-            title: row.get(3)?,
-            summary: row.get(4)?,
-            completed_items: serde_json::from_str(&completed_json).unwrap_or_default(),
-            current_risks: serde_json::from_str(&risks_json).unwrap_or_default(),
-            next_actions: serde_json::from_str(&actions_json).unwrap_or_default(),
-            progress_percent: row.get(8)?,
-            used_agents: serde_json::from_str(&agents_json).unwrap_or_default(),
-            used_models: serde_json::from_str(&models_json).unwrap_or_default(),
-            estimated_cost: row.get(11)?,
-            actual_cost: row.get(12)?,
-            requires_user_decision: row.get::<_, i32>(13)? == 1,
-            created_at: row.get(14)?,
+            Ok(OrchestratorReport {
+                id: row.get(0)?,
+                project_run_id: row.get(1)?,
+                report_type: row.get(2)?,
+                title: row.get(3)?,
+                summary: row.get(4)?,
+                completed_items: serde_json::from_str(&completed_json).unwrap_or_default(),
+                current_risks: serde_json::from_str(&risks_json).unwrap_or_default(),
+                next_actions: serde_json::from_str(&actions_json).unwrap_or_default(),
+                progress_percent: row.get(8)?,
+                used_agents: serde_json::from_str(&agents_json).unwrap_or_default(),
+                used_models: serde_json::from_str(&models_json).unwrap_or_default(),
+                estimated_cost: row.get(11)?,
+                actual_cost: row.get(12)?,
+                requires_user_decision: row.get::<_, i32>(13)? == 1,
+                created_at: row.get(14)?,
+            })
         })
-    }).map_err(|e| e.to_string())?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     Ok(reports)
 }
@@ -508,17 +543,28 @@ pub fn get_task_breakdown(
 ) -> Result<Option<TaskBreakdown>, String> {
     let conn = db.connection();
 
-    let result: Option<(String, String, String, String, String)> = conn.query_row(
-        "SELECT id, scenario_plan_id, original_task_title, subtasks_json, execution_order_json
+    let result: Option<(String, String, String, String, String)> = conn
+        .query_row(
+            "SELECT id, scenario_plan_id, original_task_title, subtasks_json, execution_order_json
          FROM task_breakdowns WHERE id = ?1",
-        params![breakdown_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-    ).ok();
+            params![breakdown_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .ok();
 
     match result {
         Some((id, scenario_plan_id, original_task_title, subtasks_json, execution_order_json)) => {
             let subtasks: Vec<Subtask> = serde_json::from_str(&subtasks_json).unwrap_or_default();
-            let execution_order: Vec<String> = serde_json::from_str(&execution_order_json).unwrap_or_default();
+            let execution_order: Vec<String> =
+                serde_json::from_str(&execution_order_json).unwrap_or_default();
 
             Ok(Some(TaskBreakdown {
                 id,

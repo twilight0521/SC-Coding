@@ -1,12 +1,22 @@
+mod agents;
 mod commands;
+mod context;
 mod db;
+mod error;
 mod models;
+mod orchestrator;
+mod patches;
+mod providers;
+mod runtime;
 mod security;
 
 use db::Database;
+use orchestrator::OrchestratorState;
+use providers::ProviderRegistry;
 use security::SecretStore;
 use std::panic;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::Manager;
 
 fn get_db_path() -> PathBuf {
@@ -51,17 +61,26 @@ pub fn run() {
             }
 
             // Initialize database
-            let db = Database::new(db_path)
-                .expect("Failed to initialize database");
+            let db = Database::new(db_path).expect("Failed to initialize database");
             db.initialize()
                 .expect("Failed to initialize database schema");
 
-            app.manage(db);
+            app.manage(db.clone());
 
             // Initialize secret store
-            let secret_store = SecretStore::new()
-                .expect("Failed to initialize secret store");
-            app.manage(secret_store);
+            let secret_store = SecretStore::new().expect("Failed to initialize secret store");
+            app.manage(secret_store.clone());
+
+            // Initialize provider registry
+            let registry = Arc::new(ProviderRegistry::new());
+            if let Err(e) = runtime::initialize_provider_registry(&registry, &db, &secret_store) {
+                eprintln!("[WARN] Failed to initialize provider registry: {}", e);
+            }
+            app.manage(registry);
+
+            // Initialize orchestrator state
+            let orch_state = Arc::new(std::sync::Mutex::new(OrchestratorState::default()));
+            app.manage(orch_state);
 
             println!("SuperCompany Coding initialized");
             Ok(())
@@ -106,6 +125,11 @@ pub fn run() {
             commands::create_project_run,
             commands::get_project_runs,
             commands::update_project_run_status,
+            // File change (Diff) commands
+            commands::list_pending_file_changes,
+            commands::preview_file_change,
+            commands::apply_file_change,
+            commands::reject_file_change,
             // Task runner commands
             commands::execute_task,
             commands::run_task_sequence,
@@ -133,6 +157,14 @@ pub fn run() {
             commands::create_orchestrator_report,
             commands::get_orchestrator_reports,
             commands::get_task_breakdown,
+            // Orchestrator Runtime commands
+            orchestrator::create_execution_plan,
+            orchestrator::start_run,
+            orchestrator::pause_run,
+            orchestrator::resume_run,
+            orchestrator::request_approval,
+            orchestrator::emit_report,
+            orchestrator::get_run_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

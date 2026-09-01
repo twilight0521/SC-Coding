@@ -126,6 +126,14 @@ export interface ProviderPreset {
   supports_streaming: boolean;
 }
 
+export interface ProviderTypeOption {
+  id: string;
+  name: string;
+  source: 'preset' | 'existing' | 'fallback';
+  default_model?: string;
+  base_url?: string;
+}
+
 export interface CreateProviderRequest {
   name: string;
   provider_type: string;
@@ -182,6 +190,9 @@ interface AppState {
   fileTree: FileNode[];
   taskResults: TaskResult[];
   decisionLogs: DecisionLog[];
+
+  // Derived helpers (computed on demand, not stored)
+  getProviderTypes: () => ProviderTypeOption[];
 
   // Provider actions
   fetchProviders: () => Promise<void>;
@@ -250,7 +261,7 @@ interface AppState {
   getDecisionLogs: (projectRunId: string) => Promise<DecisionLog[]>;
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   providers: [],
   agents: [],
   presets: [],
@@ -266,6 +277,50 @@ export const useAppStore = create<AppState>((set) => ({
   fileTree: [],
   taskResults: [],
   decisionLogs: [],
+
+  // Derived: build provider type options from presets + existing providers + a fallback
+  getProviderTypes: () => {
+    const state = get();
+    const seen = new Set<string>();
+    const options: ProviderTypeOption[] = [];
+
+    // From presets (preferred — known good defaults)
+    for (const preset of state.presets) {
+      if (!seen.has(preset.provider_type)) {
+        seen.add(preset.provider_type);
+        options.push({
+          id: preset.provider_type,
+          name: preset.name,
+          source: 'preset',
+          default_model: preset.default_model,
+          base_url: preset.base_url,
+        });
+      }
+    }
+
+    // From existing providers (for any types not in presets)
+    for (const provider of state.providers) {
+      if (!seen.has(provider.provider_type)) {
+        seen.add(provider.provider_type);
+        options.push({
+          id: provider.provider_type,
+          name: provider.provider_type,
+          source: 'existing',
+        });
+      }
+    }
+
+    // Fallback for OpenAI-compatible
+    if (!seen.has('openai_compatible')) {
+      options.push({
+        id: 'openai_compatible',
+        name: 'OpenAI Compatible (Custom)',
+        source: 'fallback',
+      });
+    }
+
+    return options;
+  },
 
   // Provider
   fetchProviders: async () => {
