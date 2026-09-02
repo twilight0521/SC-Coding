@@ -6,12 +6,13 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 export default tseslint.config(
   { ignores: ['dist', 'node_modules', 'src-tauri/target'] },
   {
-    extends: [js.configs.recommended],
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],
     languageOptions: {
       ecmaVersion: 2020,
     },
     plugins: {
+      '@typescript-eslint': tseslint.plugin,
       'react-hooks': reactHooks,
       'react-refresh': reactRefresh,
     },

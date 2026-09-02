@@ -215,6 +215,10 @@ fn resolve_path(project_path: &str, file_path: &str) -> Result<PathBuf, String> 
     // Enforce containment against the project root.
     let project_norm = project.canonicalize().map_err(|e| e.to_string())?;
     let containment_path = if resolved.exists() {
+        let link_metadata = fs::symlink_metadata(&resolved).map_err(|e| e.to_string())?;
+        if link_metadata.file_type().is_symlink() {
+            return Err("Refusing to apply change through a symbolic link".to_string());
+        }
         resolved.canonicalize().map_err(|e| e.to_string())?
     } else if let Some(parent) = resolved.parent() {
         parent.canonicalize().map_err(|e| e.to_string())?.join(
@@ -229,5 +233,12 @@ fn resolve_path(project_path: &str, file_path: &str) -> Result<PathBuf, String> 
         return Err("Refusing to apply change outside the project directory".to_string());
     }
 
-    Ok(resolved)
+    // For existing files this is the canonical target, so subsequent writes
+    // cannot accidentally follow a symlink introduced between validation and
+    // the filesystem operation.
+    if resolved.exists() {
+        Ok(containment_path)
+    } else {
+        Ok(resolved)
+    }
 }

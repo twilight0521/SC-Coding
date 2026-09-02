@@ -78,8 +78,30 @@ export function ProjectDetailPage() {
     }
   };
 
-  const handlePauseRun = () => {
-    setIsRunning(false);
+  const handlePauseRun = async () => {
+    if (!currentRun?.id) return;
+    try {
+      await invoke("pause_run", {
+        projectRunId: currentRun.id,
+        reason: "User requested pause",
+      });
+      setIsRunning(false);
+      await fetchProjectRuns(projectId || "");
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleResumeRun = async () => {
+    if (!currentRun?.id) return;
+    try {
+      setIsRunning(true);
+      await invoke("resume_run", { projectRunId: currentRun.id });
+      await fetchProjectRuns(projectId || "");
+    } catch (err) {
+      setIsRunning(false);
+      console.error(err);
+    }
   };
 
   if (!currentProject) {
@@ -92,6 +114,7 @@ export function ProjectDetailPage() {
 
   const currentRun = projectRuns[0];
   const activeTaskId = tasks[0]?.id;
+  const runIsActive = isRunning || currentRun?.status === "running";
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -103,8 +126,10 @@ export function ProjectDetailPage() {
             <p className="text-sm text-muted-foreground font-mono">{currentProject.path}</p>
           </div>
           <div className="flex gap-2">
-            {isRunning ? (
+            {runIsActive ? (
               <Button variant="outline" onClick={handlePauseRun}>Pause</Button>
+            ) : currentRun?.status === "paused" ? (
+              <Button onClick={handleResumeRun}>Resume</Button>
             ) : (
               <Button onClick={handleStartRun}>Start Run</Button>
             )}

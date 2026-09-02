@@ -3,11 +3,6 @@ import { DiffEditor } from './DiffEditor';
 import { Button } from './ui/Button';
 import { GitCompare, CheckCircle, XCircle } from 'lucide-react';
 
-export interface DiffSegment {
-  type: 'equal' | 'insert' | 'delete';
-  lines: string[];
-}
-
 interface DiffViewerProps {
   originalContent?: string | null;
   modifiedContent?: string | null;
@@ -105,70 +100,4 @@ export function DiffViewer({ originalContent, modifiedContent, filePath, onApply
       )}
     </div>
   );
-}
-
-// Simple diff algorithm for text comparison
-export function computeDiff(original: string, modified: string): DiffSegment[] {
-  const originalLines = original.split('\n');
-  const modifiedLines = modified.split('\n');
-
-  const result: DiffSegment[] = [];
-
-  let i = 0, j = 0;
-
-  while (i < originalLines.length || j < modifiedLines.length) {
-    if (i < originalLines.length && j < modifiedLines.length) {
-      if (originalLines[i] === modifiedLines[j]) {
-        result.push({ type: 'equal', lines: [originalLines[i]] });
-        i++;
-        j++;
-      } else {
-        let nextMatchI = -1;
-        let nextMatchJ = -1;
-
-        for (let k = i; k < originalLines.length; k++) {
-          for (let l = j; l < modifiedLines.length; l++) {
-            if (originalLines[k] === modifiedLines[l]) {
-              nextMatchI = k;
-              nextMatchJ = l;
-              break;
-            }
-          }
-          if (nextMatchI !== -1) break;
-        }
-
-        if (nextMatchI === -1) {
-          const deleted: string[] = [];
-          while (i < originalLines.length) {
-            deleted.push(originalLines[i]);
-            i++;
-          }
-          const inserted: string[] = [];
-          while (j < modifiedLines.length) {
-            inserted.push(modifiedLines[j]);
-            j++;
-          }
-          if (deleted.length > 0) result.push({ type: 'delete', lines: deleted });
-          if (inserted.length > 0) result.push({ type: 'insert', lines: inserted });
-        } else {
-          if (nextMatchI > i) {
-            result.push({ type: 'delete', lines: originalLines.slice(i, nextMatchI) });
-            i = nextMatchI;
-          }
-          if (nextMatchJ > j) {
-            result.push({ type: 'insert', lines: modifiedLines.slice(j, nextMatchJ) });
-            j = nextMatchJ;
-          }
-        }
-      }
-    } else if (i < originalLines.length) {
-      result.push({ type: 'delete', lines: originalLines.slice(i) });
-      i = originalLines.length;
-    } else if (j < modifiedLines.length) {
-      result.push({ type: 'insert', lines: modifiedLines.slice(j) });
-      j = modifiedLines.length;
-    }
-  }
-
-  return result;
 }

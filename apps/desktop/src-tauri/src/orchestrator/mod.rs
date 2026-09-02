@@ -1,4 +1,4 @@
-use crate::commands::task_runner::{execute_task, TaskResult};
+use crate::commands::task_runner::execute_task;
 use crate::db::Database;
 use crate::providers::ProviderRegistry;
 use crate::security::SecretStore;
@@ -137,20 +137,17 @@ pub fn create_execution_plan(
 
     // Organize into phases based on task type
     let mut phases_map: HashMap<String, Vec<String>> = HashMap::new();
+    // Use one canonical entry per phase. The task-type aliases below all map
+    // to the same phase; iterating aliases would otherwise enqueue a phase
+    // multiple times and execute every task repeatedly.
     let phase_order = vec![
-        "requirement_analysis",
-        "architecture_design",
-        "repo_understanding",
-        "frontend_coding",
-        "backend_coding",
-        "database_design",
-        "test_generation",
-        "code_review",
-        "debugging",
-        "refactoring",
-        "security_review",
-        "documentation",
-        "integration",
+        "1. Analysis",
+        "2. Design",
+        "3. Implementation",
+        "4. Quality Assurance",
+        "5. Refinement",
+        "6. Documentation",
+        "7. Integration",
     ];
 
     for (task_id, task_type, _complexity) in &tasks {
@@ -174,17 +171,7 @@ pub fn create_execution_plan(
     let mut prev_phase_tasks: Vec<String> = Vec::new();
 
     for phase_name in &phase_order {
-        let mapped_phase = match *phase_name {
-            "requirement_analysis" => "1. Analysis",
-            "architecture_design" | "repo_understanding" => "2. Design",
-            "frontend_coding" | "backend_coding" | "database_design" => "3. Implementation",
-            "test_generation" | "code_review" | "security_review" => "4. Quality Assurance",
-            "debugging" | "refactoring" => "5. Refinement",
-            "documentation" => "6. Documentation",
-            _ => "7. Integration",
-        };
-
-        if let Some(task_ids) = phases_map.get(mapped_phase) {
+        if let Some(task_ids) = phases_map.get(*phase_name) {
             let dependencies = if prev_phase_tasks.is_empty() {
                 vec![]
             } else {
@@ -192,7 +179,7 @@ pub fn create_execution_plan(
             };
 
             phases.push(ExecutionPhase {
-                phase_name: mapped_phase.to_string(),
+                phase_name: phase_name.to_string(),
                 task_ids: task_ids.clone(),
                 dependencies,
                 parallel: task_ids.len() > 1,
@@ -225,13 +212,49 @@ pub async fn start_run(
 ) -> Result<String, String> {
     let now = Utc::now();
 
+    // Reject duplicate starts and invalid lifecycle transitions before any
+    // runtime state is created. A failed run may be retried; completed runs
+    // must be started by creating a new project run.
+    {
+        let runtime_state = state.lock().unwrap();
+        if runtime_state.active_runs.contains_key(&project_run_id) {
+            return Err("Run is already running".to_string());
+        }
+    }
+
+    let current_status: String = {
+        let conn = db.connection();
+        conn.query_row(
+            "SELECT status FROM project_runs WHERE id = ?1",
+            params![project_run_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "Project run not found".to_string())?
+    };
+    if !matches!(current_status.as_str(), "created" | "paused" | "failed") {
+        return Err(format!(
+            "Cannot start run from status '{}'.",
+            current_status
+        ));
+    }
+
     // Update project_run status to running
     {
         let conn = db.connection();
-        conn.execute(
-            "UPDATE project_runs SET status = 'running', started_at = ?1, updated_at = ?1 WHERE id = ?2",
-            params![now.to_rfc3339(), project_run_id],
-        ).map_err(|e| e.to_string())?;
+        let updated = conn
+            .execute(
+                "UPDATE project_runs
+             SET status = 'running',
+                 started_at = COALESCE(started_at, ?1),
+                 completed_at = NULL,
+                 updated_at = ?1
+             WHERE id = ?2 AND status IN ('created', 'paused', 'failed')",
+                params![now.to_rfc3339(), project_run_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated == 0 {
+            return Err("Run state changed before it could be started".to_string());
+        }
     }
 
     // Create run session
@@ -261,15 +284,60 @@ pub async fn start_run(
     }
 
     // Get plan and execute
-    let plan = create_execution_plan(db.clone(), project_run_id.clone(), None)?;
+    let scenario_plan_id: Option<String> = {
+        let conn = db.connection();
+        conn.query_row(
+            "SELECT scenario_plan_id FROM project_runs WHERE id = ?1",
+            params![project_run_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    let plan = match create_execution_plan(db.clone(), project_run_id.clone(), scenario_plan_id) {
+        Ok(plan) => plan,
+        Err(error) => {
+            let _ = mark_run_failed(&db, &state, &project_run_id);
+            return Err(error);
+        }
+    };
 
+    // A resumed run must not execute tasks that already completed before the
+    // pause (or after a transient command failure).
+    let completed_tasks: std::collections::HashSet<String> = {
+        let conn = db.connection();
+        let mut stmt = conn
+            .prepare("SELECT id FROM tasks WHERE project_id = (SELECT project_id FROM project_runs WHERE id = ?1) AND status IN ('completed', 'completed_with_warnings')")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![project_run_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<std::collections::HashSet<String>, _>>();
+        rows.map_err(|e| e.to_string())?
+    };
     let total_tasks: Vec<String> = plan
         .phases
         .iter()
-        .flat_map(|p| p.task_ids.clone())
+        .flat_map(|p| {
+            p.task_ids
+                .iter()
+                .filter(|id| !completed_tasks.contains(*id))
+                .cloned()
+        })
         .collect();
 
     let total = total_tasks.len();
+
+    if total == 0 {
+        let now = Utc::now();
+        db.connection()
+            .execute(
+                "UPDATE project_runs SET status = 'completed', completed_at = ?1, progress_percent = 100, updated_at = ?1 WHERE id = ?2",
+                params![now.to_rfc3339(), project_run_id],
+            )
+            .map_err(|e| e.to_string())?;
+        state.lock().unwrap().active_runs.remove(&project_run_id);
+        return Ok("Run completed".to_string());
+    }
 
     // Execute tasks phase by phase
     for phase in &plan.phases {
@@ -289,8 +357,11 @@ pub async fn start_run(
         }
 
         // Execute tasks in this phase
-        let mut phase_results = Vec::new();
-        for task_id in &phase.task_ids {
+        for task_id in phase
+            .task_ids
+            .iter()
+            .filter(|id| !completed_tasks.contains(*id))
+        {
             // Check if run was paused
             {
                 let state = state.lock().unwrap();
@@ -302,16 +373,65 @@ pub async fn start_run(
                 }
             }
 
+            // Enforce explicit task dependencies before executing a task.
+            let dependencies_completed: bool = {
+                let conn = db.connection();
+                conn.query_row(
+                    "SELECT NOT EXISTS (
+                       SELECT 1 FROM task_dependencies d
+                       JOIN tasks dependency ON dependency.id = d.depends_on_task_id
+                       WHERE d.task_id = ?1
+                         AND dependency.status NOT IN ('completed', 'completed_with_warnings')
+                     )",
+                    params![task_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?
+            };
+            if !dependencies_completed {
+                let error = format!("Task {} has incomplete dependencies", task_id);
+                let _ = mark_run_failed(&db, &state, &project_run_id);
+                return Err(error);
+            }
+
             let result = execute_task(
                 db.clone(),
                 secret_store.clone(),
                 registry.clone(),
                 task_id.clone(),
             )
-            .await?;
+            .await;
+            let result = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    let _ = mark_run_failed(&db, &state, &project_run_id);
+                    return Err(error);
+                }
+            };
+
+            // execute_task reports model/provider failures as a TaskResult so
+            // standalone callers can display structured failure details. The
+            // orchestrator must still persist that status and fail the run.
+            {
+                let conn = db.connection();
+                if let Err(error) = conn.execute(
+                    "UPDATE tasks SET status = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![result.status, Utc::now().to_rfc3339(), task_id],
+                ) {
+                    let error = error.to_string();
+                    let _ = mark_run_failed(&db, &state, &project_run_id);
+                    return Err(error);
+                }
+            }
+            if result.status == "failed" {
+                let error = result
+                    .error
+                    .unwrap_or_else(|| format!("Task {} failed", task_id));
+                let _ = mark_run_failed(&db, &state, &project_run_id);
+                return Err(error);
+            }
 
             // Update progress
-            let completed = phase_results.len() + 1;
             let overall_completed = total_tasks.iter().position(|t| t == task_id).unwrap_or(0) + 1;
             let progress = ((overall_completed as f64 / total as f64) * 100.0) as i32;
 
@@ -322,8 +442,6 @@ pub async fn start_run(
                     params![progress, Utc::now().to_rfc3339(), project_run_id],
                 );
             }
-
-            phase_results.push(result);
         }
     }
 
@@ -346,6 +464,22 @@ pub async fn start_run(
     Ok("Run completed".to_string())
 }
 
+fn mark_run_failed(
+    db: &State<'_, Database>,
+    state: &State<'_, Arc<std::sync::Mutex<OrchestratorState>>>,
+    project_run_id: &str,
+) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    db.connection()
+        .execute(
+            "UPDATE project_runs SET status = 'failed', updated_at = ?1 WHERE id = ?2",
+            params![now, project_run_id],
+        )
+        .map_err(|e| e.to_string())?;
+    state.lock().unwrap().active_runs.remove(project_run_id);
+    Ok(())
+}
+
 /// Pause a project run
 #[tauri::command]
 pub fn pause_run(
@@ -359,11 +493,26 @@ pub fn pause_run(
     // Update database
     {
         let conn = db.connection();
-        conn.execute(
-            "UPDATE project_runs SET status = 'paused', updated_at = ?1 WHERE id = ?2",
-            params![now.to_rfc3339(), project_run_id],
-        )
-        .map_err(|e| e.to_string())?;
+        let updated = conn
+            .execute(
+                "UPDATE project_runs SET status = 'paused', updated_at = ?1
+             WHERE id = ?2 AND status = 'running'",
+                params![now.to_rfc3339(), project_run_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated == 0 {
+            let status: Option<String> = conn
+                .query_row(
+                    "SELECT status FROM project_runs WHERE id = ?1",
+                    params![project_run_id],
+                    |row| row.get(0),
+                )
+                .ok();
+            return Err(match status {
+                Some(status) => format!("Cannot pause run from status '{}'.", status),
+                None => "Project run not found".to_string(),
+            });
+        }
     }
 
     // Update state
@@ -405,40 +554,34 @@ pub fn pause_run(
 
 /// Resume a project run
 #[tauri::command]
-pub fn resume_run(
-    db: State<Database>,
-    state: State<Arc<std::sync::Mutex<OrchestratorState>>>,
+pub async fn resume_run(
+    db: State<'_, Database>,
+    secret_store: State<'_, SecretStore>,
+    registry: State<'_, Arc<ProviderRegistry>>,
+    state: State<'_, Arc<std::sync::Mutex<OrchestratorState>>>,
     project_run_id: String,
-) -> Result<(), String> {
-    let now = Utc::now();
-
-    // Update database
-    {
+) -> Result<String, String> {
+    let status: String = {
         let conn = db.connection();
-        conn.execute(
-            "UPDATE project_runs SET status = 'running', updated_at = ?1 WHERE id = ?2",
-            params![now.to_rfc3339(), project_run_id],
+        conn.query_row(
+            "SELECT status FROM project_runs WHERE id = ?1",
+            params![project_run_id],
+            |row| row.get(0),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "Project run not found".to_string())?
+    };
+    if status != "paused" {
+        return Err(format!("Cannot resume run from status '{}'.", status));
     }
 
-    // Update state
-    {
-        let mut state = state.lock().unwrap();
-        state.paused.remove(&project_run_id);
-        state.active_runs.insert(
-            project_run_id.clone(),
-            RunSession {
-                project_run_id: project_run_id.clone(),
-                current_phase: "Resuming".to_string(),
-                progress_percent: 0,
-                active_tasks: vec![],
-                pending_approvals: vec![],
-            },
-        );
-    }
+    // Runtime state is intentionally best-effort: a paused run must remain
+    // resumable after an application restart, when this in-memory entry no
+    // longer exists.
+    state.lock().unwrap().paused.remove(&project_run_id);
 
-    Ok(())
+    // Re-enter the same execution path so resume actually performs pending
+    // work instead of only changing in-memory status.
+    start_run(db, secret_store, registry, state, project_run_id).await
 }
 
 /// Request approval for a risky operation

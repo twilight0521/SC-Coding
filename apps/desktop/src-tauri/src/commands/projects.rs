@@ -4,6 +4,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tauri::State;
 use uuid::Uuid;
 
@@ -97,9 +98,11 @@ pub fn create_project(
     let now = Utc::now();
 
     // Validate path exists
-    if !PathBuf::from(&request.path).exists() {
+    let project_path = PathBuf::from(&request.path);
+    if !project_path.exists() || !project_path.is_dir() {
         return Err("Project path does not exist".to_string());
     }
+    let canonical_path = project_path.canonicalize().map_err(|e| e.to_string())?;
 
     conn.execute(
         "INSERT INTO projects (id, name, path, type, tech_stack, created_at, updated_at)
@@ -107,7 +110,7 @@ pub fn create_project(
         params![
             id,
             request.name,
-            request.path,
+            canonical_path.to_string_lossy().to_string(),
             request.project_type,
             request.tech_stack,
             now.to_rfc3339()
@@ -118,7 +121,7 @@ pub fn create_project(
     Ok(ProjectResponse {
         id,
         name: request.name,
-        path: request.path,
+        path: canonical_path.to_string_lossy().to_string(),
         project_type: request.project_type,
         tech_stack: request.tech_stack,
         budget_limit: None,
@@ -175,21 +178,110 @@ pub fn update_project(
 
 // Delete project
 #[tauri::command]
-pub fn delete_project(db: State<Database>, id: String) -> Result<(), String> {
-    let conn = db.connection();
+pub fn delete_project(
+    db: State<Database>,
+    state: State<Arc<Mutex<crate::orchestrator::OrchestratorState>>>,
+    id: String,
+) -> Result<(), String> {
+    let mut conn = db.connection();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-    // Delete related records first
-    conn.execute("DELETE FROM tasks WHERE project_id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
-    conn.execute(
+    let run_ids: Vec<String> = {
+        let mut stmt = tx
+            .prepare("SELECT id FROM project_runs WHERE project_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let run_ids = stmt
+            .query_map(params![id], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        run_ids
+    };
+
+    // Remove run-owned records before runs, and task-owned records before
+    // tasks. The schema intentionally enables foreign keys, so deletion must
+    // follow this order instead of relying on implicit cascades.
+    tx.execute(
+        "DELETE FROM orchestrator_reports WHERE project_run_id IN (SELECT id FROM project_runs WHERE project_id = ?1)",
+        params![id],
+    ).map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM approval_requests WHERE project_run_id IN (SELECT id FROM project_runs WHERE project_id = ?1)",
+        params![id],
+    ).map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM decision_logs WHERE project_run_id IN (SELECT id FROM project_runs WHERE project_id = ?1)",
+        params![id],
+    ).map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM run_events WHERE project_run_id IN (SELECT id FROM project_runs WHERE project_id = ?1)",
+        params![id],
+    ).map_err(|e| e.to_string())?;
+    tx.execute(
         "DELETE FROM project_runs WHERE project_id = ?1",
         params![id],
     )
     .map_err(|e| e.to_string())?;
 
-    // Delete project
-    conn.execute("DELETE FROM projects WHERE id = ?1", params![id])
+    tx.execute(
+        "DELETE FROM model_call_logs WHERE project_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM test_runs WHERE project_id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM file_changes WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM routing_history WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM debug_sessions WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM task_dependencies WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?1) OR depends_on_task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
+        params![id],
+    ).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM tasks WHERE project_id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM task_breakdowns WHERE scenario_plan_id IN (SELECT id FROM scenario_plans WHERE project_id = ?1)",
+        params![id],
+    ).map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM scenario_plans WHERE project_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM execution_snapshots WHERE project_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let deleted = tx
+        .execute("DELETE FROM projects WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    if deleted == 0 {
+        return Err("Project not found".to_string());
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+
+    // A concurrent executor checks this state between tasks. Removing each
+    // deleted run prevents it from continuing after its database records are
+    // gone; persisted rows remain the source of truth after a restart.
+    let mut runtime_state = state.lock().unwrap();
+    for run_id in run_ids {
+        runtime_state.active_runs.remove(&run_id);
+        runtime_state.paused.remove(&run_id);
+    }
 
     Ok(())
 }
@@ -207,8 +299,9 @@ pub struct FileNode {
 
 // List directory contents for file tree
 #[tauri::command]
-pub fn list_directory(path: String) -> Result<Vec<FileNode>, String> {
+pub fn list_directory(db: State<Database>, path: String) -> Result<Vec<FileNode>, String> {
     let path = PathBuf::from(&path);
+    ensure_project_path(&db, &path)?;
 
     if !path.exists() {
         return Err("Path does not exist".to_string());
@@ -266,8 +359,13 @@ pub fn list_directory(path: String) -> Result<Vec<FileNode>, String> {
 
 // Read file contents
 #[tauri::command]
-pub fn read_file(path: String, max_size: Option<u64>) -> Result<String, String> {
+pub fn read_file(
+    db: State<Database>,
+    path: String,
+    max_size: Option<u64>,
+) -> Result<String, String> {
     let path = PathBuf::from(&path);
+    ensure_project_path(&db, &path)?;
 
     if !path.exists() {
         return Err("File does not exist".to_string());
@@ -283,13 +381,7 @@ pub fn read_file(path: String, max_size: Option<u64>) -> Result<String, String> 
     }
 
     // Check for sensitive extensions
-    let sensitive_exts = [".env", ".pem", ".key", ".sqlite", ".db"];
-    let ext = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-
-    if sensitive_exts.contains(&format!(".{}", ext).as_str()) {
+    if crate::security::is_sensitive_path(&path) {
         return Err("Cannot read sensitive file".to_string());
     }
 
@@ -298,8 +390,9 @@ pub fn read_file(path: String, max_size: Option<u64>) -> Result<String, String> 
 
 // Get file/directory info
 #[tauri::command]
-pub fn get_file_info(path: String) -> Result<serde_json::Value, String> {
+pub fn get_file_info(db: State<Database>, path: String) -> Result<serde_json::Value, String> {
     let path = PathBuf::from(&path);
+    ensure_project_path(&db, &path)?;
 
     if !path.exists() {
         return Err("Path does not exist".to_string());
@@ -316,6 +409,31 @@ pub fn get_file_info(path: String) -> Result<serde_json::Value, String> {
             .ok()
             .map(|t| chrono::DateTime::<Utc>::from(t).to_rfc3339()),
     }))
+}
+
+fn ensure_project_path(db: &Database, path: &std::path::Path) -> Result<(), String> {
+    if crate::security::is_sensitive_path(path) {
+        return Err("Sensitive file access blocked".to_string());
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| "Path does not exist".to_string())?;
+    let conn = db.connection();
+    let mut stmt = conn
+        .prepare("SELECT path FROM projects")
+        .map_err(|e| e.to_string())?;
+    let roots = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    for root in roots {
+        let root = root.map_err(|e| e.to_string())?;
+        if let Ok(root) = std::path::Path::new(&root).canonicalize() {
+            if canonical.starts_with(root) {
+                return Ok(());
+            }
+        }
+    }
+    Err("Path is outside all registered project directories".to_string())
 }
 
 // ==================== TASK COMMANDS ====================

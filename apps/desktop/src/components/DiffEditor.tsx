@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { computeDiff, DiffSegment } from './DiffViewer';
+import { computeDiff, DiffSegment } from './diff';
 
 interface DiffEditorProps {
   original: string;

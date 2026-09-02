@@ -330,8 +330,12 @@ pub async fn execute_task(
                 task_id,
                 assigned_agent_id,
                 provider_id,
-                format!("Task: {}", title),
-                if output_text.len() > 200 { &output_text[..200] } else { &output_text },
+                "Task execution request",
+                format!(
+                    "Generated {} characters and {} patch(es)",
+                    output_text.len(),
+                    parse_result.patches.len()
+                ),
                 chat_response.usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0) as i64,
                 chat_response.usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0) as i64,
                 chat_response.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0) as i64,

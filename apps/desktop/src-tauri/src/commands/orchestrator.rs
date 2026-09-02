@@ -493,8 +493,8 @@ pub fn get_orchestrator_reports(
     let mut stmt = conn
         .prepare(
             "SELECT id, project_run_id, report_type, title, summary,
-                completed_items_json, current_risks_json, next_actions_json,
-                progress_percent, used_agents_json, used_models_json,
+                COALESCE(completed_items_json, '[]'), COALESCE(current_risks_json, '[]'), COALESCE(next_actions_json, '[]'),
+                progress_percent, COALESCE(used_agents_json, '[]'), COALESCE(used_models_json, '[]'),
                 estimated_cost, actual_cost, requires_user_decision, created_at
          FROM orchestrator_reports
          WHERE project_run_id = ?1

@@ -20,6 +20,9 @@ impl OpenAICompatibleAdapter {
     pub fn new(provider_id: String, base_url: String, api_key: Option<String>) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
+            // Provider URLs are user-configurable. Do not follow redirects,
+            // since a redirect could send the Authorization header elsewhere.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("Failed to create HTTP client");
 

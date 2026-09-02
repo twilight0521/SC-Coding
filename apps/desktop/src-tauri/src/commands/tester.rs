@@ -3,7 +3,8 @@ use crate::security::{validate_command, validate_command_argument};
 use chrono::Utc;
 use rusqlite::params;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
+use std::time::Duration;
 use tauri::State;
 use uuid::Uuid;
 
@@ -123,6 +124,62 @@ fn build_test_command(
     (command, working_dir)
 }
 
+fn run_test_process(
+    framework: &str,
+    working_dir: &str,
+    filter: Option<&str>,
+) -> Result<Output, String> {
+    let mut command = match framework {
+        "vitest" => {
+            let mut c = Command::new("npx");
+            c.arg("vitest").arg("run");
+            c
+        }
+        "jest" => {
+            let mut c = Command::new("npx");
+            c.arg("jest");
+            c
+        }
+        "npm" => {
+            let mut c = Command::new("npm");
+            c.args(["test", "--", "--passWithNoTests"]);
+            c
+        }
+        "cargo" => {
+            let mut c = Command::new("cargo");
+            c.arg("test");
+            c
+        }
+        "pytest" => {
+            let mut c = Command::new("pytest");
+            c
+        }
+        "go" => {
+            let mut c = Command::new("go");
+            c.args(["test", "-v", "./..."]);
+            c
+        }
+        _ => return Err("No test framework detected".to_string()),
+    };
+    if let Some(filter) = filter {
+        command.arg(filter);
+    }
+    command.current_dir(working_dir);
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            return child.wait_with_output().map_err(|e| e.to_string());
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Test command timed out after 120 seconds".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 // Run tests with specified framework
 #[tauri::command]
 pub fn run_tests(
@@ -157,19 +214,7 @@ pub fn run_tests(
     let start_time = std::time::Instant::now();
 
     // Execute test command
-    let output = if cfg!(target_os = "windows") {
-        Command::new("cmd")
-            .args(["/C", &command])
-            .current_dir(&working_dir)
-            .output()
-            .map_err(|e| e.to_string())?
-    } else {
-        Command::new("sh")
-            .args(["-c", &command])
-            .current_dir(&working_dir)
-            .output()
-            .map_err(|e| e.to_string())?
-    };
+    let output = run_test_process(&framework, &working_dir, test_filter.as_deref())?;
 
     let duration_ms = start_time.elapsed().as_millis() as i64;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -320,19 +365,7 @@ pub fn quick_test(
     let test_id = Uuid::new_v4().to_string();
     let start_time = std::time::Instant::now();
 
-    let output = if cfg!(target_os = "windows") {
-        Command::new("cmd")
-            .args(["/C", &command])
-            .current_dir(&working_dir)
-            .output()
-            .map_err(|e| e.to_string())?
-    } else {
-        Command::new("sh")
-            .args(["-c", &command])
-            .current_dir(&working_dir)
-            .output()
-            .map_err(|e| e.to_string())?
-    };
+    let output = run_test_process(&framework, &working_dir, Some(&target))?;
 
     let duration_ms = start_time.elapsed().as_millis() as i64;
     let stdout = String::from_utf8_lossy(&output.stdout);

@@ -59,10 +59,20 @@ impl ContextBuilder {
 
     pub fn build(&self, task_id: &str, keywords: &[String]) -> Result<TaskContext, String> {
         let project_path = Path::new(&self.project_path);
+        let canonical_project_path = project_path
+            .canonicalize()
+            .map_err(|_| "Project path does not exist".to_string())?;
         let mut files = Vec::new();
         let mut total_size = 0u64;
 
-        self.collect_files_recursive(project_path, keywords, &mut files, &mut total_size, 0)?;
+        self.collect_files_recursive(
+            &canonical_project_path,
+            &canonical_project_path,
+            keywords,
+            &mut files,
+            &mut total_size,
+            0,
+        )?;
 
         Ok(TaskContext {
             task_id: task_id.to_string(),
@@ -75,6 +85,7 @@ impl ContextBuilder {
     fn collect_files_recursive(
         &self,
         dir: &Path,
+        project_root: &Path,
         keywords: &[String],
         files: &mut Vec<FileContext>,
         total_size: &mut u64,
@@ -97,17 +108,39 @@ impl ContextBuilder {
                 .unwrap_or("")
                 .to_string();
 
-            if self.is_sensitive(&name) {
+            if crate::security::is_sensitive_path(&path) || self.is_sensitive(&name) {
                 continue;
             }
 
-            let metadata = match entry.metadata() {
+            // Context is submitted to a provider, so never follow symlinks.
+            // Besides preventing project-root escapes, this avoids recursive
+            // links and surprising inclusion of files outside the workspace.
+            let link_metadata = match entry.file_type() {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            if link_metadata.is_symlink() {
+                continue;
+            }
+
+            let canonical_path = match path.canonicalize() {
+                Ok(path) if path.starts_with(project_root) => path,
+                _ => continue,
+            };
+            let metadata = match fs::metadata(&canonical_path) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
 
             if metadata.is_dir() {
-                self.collect_files_recursive(&path, keywords, files, total_size, depth + 1)?;
+                self.collect_files_recursive(
+                    &canonical_path,
+                    project_root,
+                    keywords,
+                    files,
+                    total_size,
+                    depth + 1,
+                )?;
             } else {
                 let size = metadata.len();
                 if size > self.max_file_size {
@@ -118,7 +151,7 @@ impl ContextBuilder {
                     continue;
                 }
 
-                let content = match fs::read_to_string(&path) {
+                let content = match fs::read_to_string(&canonical_path) {
                     Ok(c) => c,
                     Err(_) => continue,
                 };
@@ -126,7 +159,7 @@ impl ContextBuilder {
                 let relevance = self.calculate_relevance(&name, &content, keywords);
 
                 files.push(FileContext {
-                    path: path.to_string_lossy().to_string(),
+                    path: canonical_path.to_string_lossy().to_string(),
                     content,
                     size,
                     relevance,
@@ -141,6 +174,9 @@ impl ContextBuilder {
 
     fn is_sensitive(&self, name: &str) -> bool {
         let name_lower = name.to_lowercase();
+        if name_lower == ".env" || name_lower.starts_with(".env.") {
+            return true;
+        }
         for pattern in &self.sensitive_patterns {
             if pattern.starts_with("*.") {
                 let ext = &pattern[1..];
@@ -153,7 +189,9 @@ impl ContextBuilder {
                 return true;
             }
         }
-        false
+        matches!(name_lower.as_str(), "id_ed25519" | "credentials.json")
+            || (name_lower.starts_with("service-account") && name_lower.ends_with(".json"))
+            || [".p12", ".pfx"].iter().any(|ext| name_lower.ends_with(ext))
     }
 
     fn calculate_relevance(&self, name: &str, content: &str, keywords: &[String]) -> f32 {
@@ -179,5 +217,31 @@ impl ContextBuilder {
         }
 
         score
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn excludes_symlinked_files_from_context() {
+        let temp =
+            std::env::temp_dir().join(format!("supercompany-context-{}", uuid::Uuid::new_v4()));
+        let project = temp.join("project");
+        let outside = temp.join("outside.txt");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("inside.txt"), "inside").unwrap();
+        fs::write(&outside, "sensitive outside content").unwrap();
+        symlink(&outside, project.join("outside-link.txt")).unwrap();
+
+        let context = ContextBuilder::new(project.to_string_lossy().to_string())
+            .build("task", &[])
+            .unwrap();
+
+        assert_eq!(context.files.len(), 1);
+        assert_eq!(context.files[0].content, "inside");
+        fs::remove_dir_all(&temp).unwrap();
     }
 }

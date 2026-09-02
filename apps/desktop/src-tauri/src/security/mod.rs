@@ -129,7 +129,16 @@ mod tests {
     #[test]
     fn identifies_sensitive_paths() {
         assert!(is_sensitive_path(std::path::Path::new(".env")));
+        assert!(is_sensitive_path(std::path::Path::new(
+            "config/.ENV.production"
+        )));
         assert!(is_sensitive_path(std::path::Path::new("certs/server.pem")));
+        assert!(is_sensitive_path(std::path::Path::new(
+            "keys/PRODUCTION.P12"
+        )));
+        assert!(is_sensitive_path(std::path::Path::new(
+            "service-account-prod.json"
+        )));
         assert!(!is_sensitive_path(std::path::Path::new("src/main.rs")));
     }
 }

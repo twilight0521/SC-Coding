@@ -9,6 +9,21 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 
+fn validate_provider_url(base_url: &str) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(base_url.trim())
+        .map_err(|_| "Provider URL must be a valid absolute URL".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Provider URL must use http or https".to_string());
+    }
+    if parsed.host_str().is_none() {
+        return Err("Provider URL must include a host".to_string());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Provider URL must not contain embedded credentials".to_string());
+    }
+    Ok(base_url.trim_end_matches('/').to_string())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateProviderRequest {
     pub name: String,
@@ -82,6 +97,7 @@ pub fn create_provider(
     request: CreateProviderRequest,
 ) -> Result<ProviderResponse, String> {
     let conn = db.connection();
+    let base_url = validate_provider_url(&request.base_url)?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now();
     let api_key_ref = request
@@ -99,7 +115,7 @@ pub fn create_provider(
             id,
             request.name,
             request.provider_type,
-            request.base_url,
+            base_url,
             api_key_ref,
             request.default_model_id,
             request.display_model_name,
@@ -133,13 +149,13 @@ pub fn create_provider(
 
     // Register the new adapter in the registry
     let api_key = request.api_key.clone();
-    runtime::update_provider_adapter(&registry, &id, request.base_url.clone(), api_key);
+    runtime::update_provider_adapter(&registry, &id, base_url.clone(), api_key);
 
     Ok(ProviderResponse {
         id,
         name: request.name,
         provider_type: request.provider_type,
-        base_url: request.base_url,
+        base_url,
         default_model_id: request.default_model_id,
         display_model_name: request.display_model_name,
         is_enabled: true,
@@ -170,6 +186,7 @@ pub fn update_provider(
         params_vec.push(Box::new(n));
     }
     if let Some(url) = base_url {
+        let url = validate_provider_url(&url)?;
         updates.push("base_url = ?".to_string());
         params_vec.push(Box::new(url));
     }
@@ -238,9 +255,28 @@ pub fn delete_provider(
     registry: State<Arc<ProviderRegistry>>,
     id: String,
 ) -> Result<(), String> {
-    let conn = db.connection();
+    let mut conn = db.connection();
 
-    // First get the api_key_ref to delete from secret store
+    // Refuse deletion when historical or active records still reference this
+    // provider. Disabling it preserves history and avoids FK failures.
+    let referencing_count: i64 = conn
+        .query_row(
+            "SELECT
+               (SELECT COUNT(*) FROM agents WHERE primary_provider_id = ?1) +
+               (SELECT COUNT(*) FROM agent_fallback_providers WHERE provider_id = ?1) +
+               (SELECT COUNT(*) FROM tasks WHERE selected_provider_id = ?1) +
+               (SELECT COUNT(*) FROM model_call_logs WHERE provider_id = ?1) +
+               (SELECT COUNT(*) FROM routing_history WHERE selected_provider_id = ?1)",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if referencing_count > 0 {
+        return Err("Provider is referenced by existing agents, tasks, or history; disable it instead of deleting".to_string());
+    }
+
+    // Fetch the API key reference before changing the database. Secrets are
+    // removed only after the database transaction succeeds.
     let api_key_ref: Option<String> = conn
         .query_row(
             "SELECT api_key_ref FROM provider_configs WHERE id = ?1",
@@ -249,14 +285,32 @@ pub fn delete_provider(
         )
         .ok();
 
-    // Delete from secret store if exists
+    // model_profiles has no ON DELETE CASCADE in the schema, so remove its
+    // dependent capabilities explicitly before deleting the provider.
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM model_capabilities WHERE model_profile_id IN (SELECT id FROM model_profiles WHERE provider_id = ?1)",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM model_profiles WHERE provider_id = ?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    let deleted = transaction
+        .execute("DELETE FROM provider_configs WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    if deleted == 0 {
+        return Err("Provider not found".to_string());
+    }
+    transaction.commit().map_err(|e| e.to_string())?;
+
     if let Some(key_ref) = api_key_ref {
         let _ = secret_store.delete(&key_ref);
     }
-
-    // Delete the provider (cascade will handle model_profiles and model_capabilities)
-    conn.execute("DELETE FROM provider_configs WHERE id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
 
     // Remove from registry
     runtime::remove_provider_adapter(&registry, &id);
@@ -273,7 +327,12 @@ pub async fn test_provider_connection(
 ) -> Result<ConnectionTestResult, String> {
     use std::time::Instant;
 
-    let client = reqwest::Client::new();
+    let base_url = validate_provider_url(&base_url)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
     let start = Instant::now();
 
     let request_body = serde_json::json!({
