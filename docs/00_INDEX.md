@@ -21,7 +21,7 @@
 |---|---|
 | `PRD.md` | 产品需求文档，定义产品定位、核心流程和功能范围 |
 | `CLAUDE.md` | Claude Code / AI Coding 执行规范 |
-| `README.md` | 项目说明与启动指引 |
+| `../README.md` | GitHub 项目首页、启动指引与仓库说明 |
 | `ARCHITECTURE.md` | 技术架构设计 |
 | `AGENT_SPEC.md` | 多 Agent 角色、职责、通信与协作规范 |
 | `SCENE_AGENT_PLANNER_SPEC.md` | 场景驱动 Agent 团队生成器 |
